@@ -1,16 +1,12 @@
 // ============================================================================
-// THE MAPUA FUCKINATOR 3000 - MASTER GITHUB CODE (KEEP THIS CLEAN & READABLE)
-// Whenever you edit and commit this file on GitHub, everyone's Tampermonkey
-// loader will automatically run your new changes on their very next refresh!
+// THE MAPUA FUCKINATOR 3000 - MASTER GITHUB CODE
 // ============================================================================
 
 (function() {
     'use strict';
 
-    // 👉 1. PASTE YOUR RAW GITHUB GIST WHITELIST URL HERE:
     const WHITELIST_URL = 'https://gist.githubusercontent.com/smurfyfrosty2-arch/bf67aac39e913984ef21ce565f7de61e/raw/whitelist.txt';
 
-    // Generates a permanent, unique Device ID based on the user's computer hardware
     function getMyDeviceID() {
         try {
             const canvas = document.createElement('canvas');
@@ -110,9 +106,7 @@
         });
     }
 
-    // =========================================================================
-    // MAIN PROGRAM (UNLOCKED)
-    // =========================================================================
+    // MAIN
 
     checkAuthorization(() => {
         const oldPanel = document.getElementById('mapua-section-hunter-panel');
@@ -194,7 +188,7 @@
             }
         }
 
-        // ---- CONTROL PANEL UI ----
+        // CONTROL PANEL UI
         const panel = document.createElement('div');
         panel.id = 'mapua-section-hunter-panel';
         panel.setAttribute('data-version', 'live');
