@@ -281,7 +281,7 @@
                 strictMatchBtn.textContent = '🛡️ Match: Exact Course Code Only';
                 strictMatchBtn.style.setProperty('background-color', '#198754', 'important');
             } else {
-                strictMatchBtn.textContent = '⚠️ Match: Any / Equivalent (Test)';
+                strictMatchBtn.textContent = '⚠️ Match: Any / Equivalent ';
                 strictMatchBtn.style.setProperty('background-color', '#dc3545', 'important');
             }
         }
@@ -451,7 +451,7 @@
 
         const testWebhookBtn = document.createElement('button');
         testWebhookBtn.type = 'button';
-        testWebhookBtn.textContent = '🔔 Test';
+        testWebhookBtn.textContent = '🔔 IMPORT';
         testWebhookBtn.style.cssText = `padding: 5px 8px !important; background-color: #5865F2 !important; color: white !important; border: none !important; border-radius: 4px !important; cursor: pointer !important; font-weight: bold !important; font-size: 11px !important;`;
         
         testWebhookBtn.addEventListener('click', (e) => {
@@ -461,9 +461,9 @@
                 alert('Paste a valid Discord Webhook URL first!');
                 return;
             }
-            sendDiscordAlarm(`🧪 Test Alarm!`, `Your Discord ID is linked and ready to receive direct pings!`, 5793266);
+            sendDiscordAlarm(`🧪 SUCCESS!`, `Your Discord ID is linked and ready to receive direct pings!`, 5793266);
             testWebhookBtn.textContent = '✅ Sent!';
-            setTimeout(() => { testWebhookBtn.textContent = '🔔 Test'; }, 2000);
+            setTimeout(() => { testWebhookBtn.textContent = '🔔 IMPORT'; }, 2000);
         });
 
         webhookRow.appendChild(webhookInput);
