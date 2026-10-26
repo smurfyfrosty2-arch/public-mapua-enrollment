@@ -429,7 +429,7 @@
         nameRow.appendChild(nameInput);
 
         const webhookLabel = document.createElement('label');
-        webhookLabel.textContent = '🔔 Discord Webhook URL (TEST):';
+        webhookLabel.textContent = '🔔 Discord Webhook URL:';
         webhookLabel.style.cssText = `font-size: 11px !important; color: #7289da !important; font-weight: bold !important;`;
         
         const webhookRow = document.createElement('div');
