@@ -5,7 +5,7 @@
 (function() {
     'use strict';
 
-    const WHITELIST_URL = 'https://gist.githubusercontent.com/YOUR_USERNAME/YOUR_GIST_ID/raw/whitelist.txt';
+    const WHITELIST_URL = 'https://gist.githubusercontent.com/smurfyfrosty2-arch/bf67aac39e913984ef21ce565f7de61e/raw/whitelist.txt';
 
     function getMyDeviceID() {
         try {
