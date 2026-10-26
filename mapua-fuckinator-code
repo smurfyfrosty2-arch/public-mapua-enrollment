@@ -1,31 +1,16 @@
-// ==UserScript==
-// @name         THE MAPUA FUCKINATOR 3000
-// @namespace    http://tampermonkey.net/
-// @version      14.5
-// @description  Automated Mapúa Course Enrollment + Direct User Mentions + Auto-Updater
-// @author       Hater of Mapúa
-// @match        *://my.mapua.edu.ph/*ManageSection.aspx*
-// @match        *://my.mapua.edu.ph/*managesection.aspx*
-// @run-at       document-end
-// @updateURL    https://raw.githubusercontent.com/smurfyfrosty2-arch/public-mapua-enrollment/refs/heads/main/mapua-fuckinator-code
-// @downloadURL  https://raw.githubusercontent.com/smurfyfrosty2-arch/public-mapua-enrollment/refs/heads/main/mapua-fuckinator-code
-// @grant        unsafeWindow
-// @grant        GM_xmlhttpRequest
-// @connect      gist.githubusercontent.com
-// @connect      discord.com
-// @connect      discordapp.com
-// ==/UserScript==
+// ============================================================================
+// THE MAPUA FUCKINATOR 3000 - MASTER GITHUB CODE (KEEP THIS CLEAN & READABLE)
+// Whenever you edit and commit this file on GitHub, everyone's Tampermonkey
+// loader will automatically run your new changes on their very next refresh!
+// ============================================================================
 
 (function() {
     'use strict';
 
-    // =========================================================================
-    // 0A. OWNER ACCESS CONTROL (USER-SPECIFIC DEVICE WHITELIST)
-    // =========================================================================
+    // 👉 1. PASTE YOUR RAW GITHUB GIST WHITELIST URL HERE:
+    const WHITELIST_URL = 'https://gist.githubusercontent.com/smurfyfrosty2-arch/bf67aac39e913984ef21ce565f7de61e/raw/whitelist.txt';
 
-    // 👉 PASTE YOUR RAW GITHUB GIST URL HERE:
-    const WHITELIST_URL = 'https://gist.githubusercontent.com/YOUR_USERNAME/YOUR_GIST_ID/raw/whitelist.txt';
-
+    // Generates a permanent, unique Device ID based on the user's computer hardware
     function getMyDeviceID() {
         try {
             const canvas = document.createElement('canvas');
@@ -112,7 +97,7 @@
                     .filter(line => line.length > 0);
 
                 if (approvedIds.includes(myDeviceId)) {
-                    console.log(`[Fuckinator 3000 v13.11] Device Authorized (${myDeviceId})!`);
+                    console.log(`[Fuckinator 3000] Device Authorized (${myDeviceId})!`);
                     callback();
                 } else {
                     sessionStorage.removeItem('mapua_hunter_is_running');
@@ -185,7 +170,7 @@
             if (!url || !url.startsWith('https://discord')) return;
 
             const cleanId = (hunterUserId || '').replace(/[^0-9]/g, '');
-            const mentionContent = cleanId.length >= 17 ? `<@${cleanId}>` : '@everyone';
+            const mentionContent = cleanId.length >= 17 ? `<@${cleanId}>` : (hunterUserId ? `**${hunterUserId}**` : '@everyone');
 
             const payload = JSON.stringify({
                 username: `FUCKINATOR 3000`,
@@ -195,7 +180,7 @@
                     description: description,
                     color: colorDec,
                     timestamp: new Date().toISOString(),
-                    footer: { text: `THE MAPUA FUCKINATOR 3000 • v13.11 • ${getMyDeviceID()}` }
+                    footer: { text: `THE MAPUA FUCKINATOR 3000 • Live GitHub Build • ${getMyDeviceID()}` }
                 }]
             });
 
@@ -212,7 +197,7 @@
         // ---- CONTROL PANEL UI ----
         const panel = document.createElement('div');
         panel.id = 'mapua-section-hunter-panel';
-        panel.setAttribute('data-version', '13.11');
+        panel.setAttribute('data-version', 'live');
         panel.style.cssText = `
             position: fixed !important; bottom: 20px !important; right: 20px !important;
             z-index: 2147483647 !important; background-color: #1e1e24 !important;
@@ -418,10 +403,6 @@
         refreshRow.appendChild(refreshLabel);
         refreshRow.appendChild(refreshInput);
 
-        // =========================================================================
-        // AUTO-SAVING DISCORD USER ID & WEBHOOK CONTAINER
-        // =========================================================================
-
         const webhookContainer = document.createElement('div');
         webhookContainer.style.cssText = `display: flex !important; flex-direction: column !important; gap: 6px !important; padding-top: 6px !important; border-top: 1px solid #444 !important;`;
 
@@ -433,7 +414,7 @@
         
         const nameInput = document.createElement('input');
         nameInput.type = 'text';
-        nameInput.placeholder = 'e.g. 012345678901234567';
+        nameInput.placeholder = 'e.g. 448740700134309888';
         nameInput.value = hunterUserId;
         nameInput.style.cssText = `flex: 1 !important; padding: 4px 6px !important; border-radius: 4px !important; border: 1px solid #ffc107 !important; background-color: #2b2b36 !important; color: #fff !important; font-size: 11px !important; font-weight: bold !important;`;
 
@@ -508,8 +489,6 @@
 
         function ensurePanelMounted() {
             if (!document.body) return;
-            const existing = document.getElementById('mapua-section-hunter-panel');
-            if (existing && existing.getAttribute('data-version') !== '13.11') existing.remove();
             if (!document.getElementById('mapua-section-hunter-panel')) document.body.appendChild(panel);
         }
         ensurePanelMounted();
