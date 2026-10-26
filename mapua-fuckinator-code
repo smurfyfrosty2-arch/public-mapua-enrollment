@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         THE MAPUA FUCKINATOR 3000
 // @namespace    http://tampermonkey.net/
-// @version      13.11
+// @version      13.12
 // @description  Automated Mapúa Course Enrollment + Direct User Mentions + Auto-Updater
 // @author       Hater of Mapúa
 // @match        *://my.mapua.edu.ph/*ManageSection.aspx*
