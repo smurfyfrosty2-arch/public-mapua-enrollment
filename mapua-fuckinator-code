@@ -1,11 +1,11 @@
 // ============================================================================
-// THE MAPUA FUCKINATOR 3000 - MASTER GITHUB CODE
+// THE MAPUA FUCKINATOR 3000 - MASTER GITHUB CODE (WITH MINIMIZE BUTTON)
 // ============================================================================
 
 (function() {
     'use strict';
 
-    const WHITELIST_URL = 'https://gist.githubusercontent.com/smurfyfrosty2-arch/bf67aac39e913984ef21ce565f7de61e/raw/whitelist.txt';
+    const WHITELIST_URL = 'https://gist.githubusercontent.com/YOUR_USERNAME/YOUR_GIST_ID/raw/whitelist.txt';
 
     function getMyDeviceID() {
         try {
@@ -106,7 +106,7 @@
         });
     }
 
-    // MAIN
+    // MAIN PROGRAM
 
     checkAuthorization(() => {
         const oldPanel = document.getElementById('mapua-section-hunter-panel');
@@ -115,6 +115,7 @@
         let isRunning = sessionStorage.getItem('mapua_hunter_is_running') === 'true';
         let isLoopActive = false;
 
+        let isMinimized = localStorage.getItem('mapua_hunter_minimized') === 'true';
         let onlyMissingSections = localStorage.getItem('mapua_hunter_only_missing') !== 'false';
         let strictCourseMatch = localStorage.getItem('mapua_hunter_strict_match') !== 'false';
         let autoConfirmYes = localStorage.getItem('mapua_hunter_auto_confirm') === 'true';
@@ -202,12 +203,31 @@
             display: flex !important; flex-direction: column !important; gap: 7px !important;
         `;
 
+        // HEADER BAR WITH MINIMIZE BUTTON
+        const headerRow = document.createElement('div');
+        headerRow.style.cssText = `
+            display: flex !important; align-items: center !important; justify-content: space-between !important;
+            padding-bottom: 6px !important; border-bottom: 1px solid #444 !important; gap: 6px !important;
+        `;
+
         const titleBar = document.createElement('div');
         titleBar.textContent = 'THE MAPUA FUCKINATOR 3000';
         titleBar.style.cssText = `
-            font-weight: bold !important; font-size: 13px !important; text-align: center !important;
-            padding-bottom: 6px !important; border-bottom: 1px solid #444 !important; color: #00e676 !important;
+            font-weight: bold !important; font-size: 12px !important; color: #00e676 !important;
+            flex: 1 !important; text-align: left !important; white-space: nowrap !important; overflow: hidden !important;
         `;
+
+        const minBtn = document.createElement('button');
+        minBtn.type = 'button';
+        minBtn.title = 'Minimize / Expand Panel';
+        minBtn.style.cssText = `
+            background-color: #2b2b36 !important; color: #ffffff !important; border: 1px solid #666 !important;
+            border-radius: 4px !important; padding: 2px 7px !important; cursor: pointer !important;
+            font-size: 11px !important; font-weight: bold !important; line-height: 1.2 !important;
+        `;
+
+        headerRow.appendChild(titleBar);
+        headerRow.appendChild(minBtn);
 
         const btn = document.createElement('button');
         btn.id = 'mapua-section-hunter-btn';
@@ -218,6 +238,35 @@
             color: white !important; border: none !important; border-radius: 6px !important;
             cursor: pointer !important; font-weight: bold !important; font-size: 13px !important; width: 100% !important;
         `;
+
+        // COLLAPSIBLE SETTINGS CONTAINER 
+        const settingsContainer = document.createElement('div');
+        settingsContainer.style.cssText = `
+            display: flex; flex-direction: column !important; gap: 7px !important; width: 100% !important;
+        `;
+
+        function updateMinimizeUI() {
+            if (isMinimized) {
+                settingsContainer.style.setProperty('display', 'none', 'important');
+                minBtn.textContent = '➕';
+                panel.style.setProperty('width', '235px', 'important');
+                panel.style.setProperty('padding', '9px 11px', 'important');
+            } else {
+                settingsContainer.style.setProperty('display', 'flex', 'important');
+                minBtn.textContent = '➖';
+                panel.style.setProperty('width', '285px', 'important');
+                panel.style.setProperty('padding', '12px', 'important');
+            }
+        }
+        updateMinimizeUI();
+
+        minBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            isMinimized = !isMinimized;
+            localStorage.setItem('mapua_hunter_minimized', isMinimized ? 'true' : 'false');
+            updateMinimizeUI();
+        });
 
         const modeBtn = document.createElement('button');
         modeBtn.type = 'button';
@@ -275,7 +324,7 @@
                 strictMatchBtn.textContent = '🛡️ Match: Exact Course Code Only';
                 strictMatchBtn.style.setProperty('background-color', '#198754', 'important');
             } else {
-                strictMatchBtn.textContent = '⚠️ Match: Any / Equivalent ';
+                strictMatchBtn.textContent = '⚠️ Match: Any / Equivalent (Test)';
                 strictMatchBtn.style.setProperty('background-color', '#dc3545', 'important');
             }
         }
@@ -408,7 +457,7 @@
         
         const nameInput = document.createElement('input');
         nameInput.type = 'text';
-        nameInput.placeholder = 'e.g. 012345678901234567';
+        nameInput.placeholder = 'e.g. 448740700134309888';
         nameInput.value = hunterUserId;
         nameInput.style.cssText = `flex: 1 !important; padding: 4px 6px !important; border-radius: 4px !important; border: 1px solid #ffc107 !important; background-color: #2b2b36 !important; color: #fff !important; font-size: 11px !important; font-weight: bold !important;`;
 
@@ -445,7 +494,7 @@
 
         const testWebhookBtn = document.createElement('button');
         testWebhookBtn.type = 'button';
-        testWebhookBtn.textContent = '🔔 IMPORT';
+        testWebhookBtn.textContent = '🔔 Test';
         testWebhookBtn.style.cssText = `padding: 5px 8px !important; background-color: #5865F2 !important; color: white !important; border: none !important; border-radius: 4px !important; cursor: pointer !important; font-weight: bold !important; font-size: 11px !important;`;
         
         testWebhookBtn.addEventListener('click', (e) => {
@@ -455,9 +504,9 @@
                 alert('Paste a valid Discord Webhook URL first!');
                 return;
             }
-            sendDiscordAlarm(`🧪 SUCCESS!`, `Your Discord ID is linked and ready to receive direct pings!`, 5793266);
+            sendDiscordAlarm(`🧪 Test Alarm!`, `Your Discord ID is linked and ready to receive direct pings!`, 5793266);
             testWebhookBtn.textContent = '✅ Sent!';
-            setTimeout(() => { testWebhookBtn.textContent = '🔔 IMPORT'; }, 2000);
+            setTimeout(() => { testWebhookBtn.textContent = '🔔 Test'; }, 2000);
         });
 
         webhookRow.appendChild(webhookInput);
@@ -466,16 +515,20 @@
         webhookContainer.appendChild(webhookLabel);
         webhookContainer.appendChild(webhookRow);
 
-        panel.appendChild(titleBar);
+        // Append all settings inside the collapsible container
+        settingsContainer.appendChild(modeBtn);
+        settingsContainer.appendChild(timePrefBtn);
+        settingsContainer.appendChild(strictMatchBtn);
+        settingsContainer.appendChild(confirmToggleBtn);
+        settingsContainer.appendChild(refreshToggleBtn);
+        settingsContainer.appendChild(speedRow);
+        settingsContainer.appendChild(refreshRow);
+        settingsContainer.appendChild(webhookContainer);
+
+        // Append Header, Start Button, and Collapsible Settings to Main Panel
+        panel.appendChild(headerRow);
         panel.appendChild(btn);
-        panel.appendChild(modeBtn);
-        panel.appendChild(timePrefBtn);
-        panel.appendChild(strictMatchBtn);
-        panel.appendChild(confirmToggleBtn);
-        panel.appendChild(refreshToggleBtn);
-        panel.appendChild(speedRow);
-        panel.appendChild(refreshRow);
-        panel.appendChild(webhookContainer);
+        panel.appendChild(settingsContainer);
 
         function setBtnColor(hex) {
             btn.style.setProperty('background-color', hex, 'important');
