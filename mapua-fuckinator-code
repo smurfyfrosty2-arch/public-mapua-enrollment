@@ -433,7 +433,7 @@
         
         const nameInput = document.createElement('input');
         nameInput.type = 'text';
-        nameInput.placeholder = 'e.g. 448740700134309888';
+        nameInput.placeholder = 'e.g. 012345678901234567';
         nameInput.value = hunterUserId;
         nameInput.style.cssText = `flex: 1 !important; padding: 4px 6px !important; border-radius: 4px !important; border: 1px solid #ffc107 !important; background-color: #2b2b36 !important; color: #fff !important; font-size: 11px !important; font-weight: bold !important;`;
 
