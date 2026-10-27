@@ -504,7 +504,7 @@
                 alert('Paste a valid Discord Webhook URL first!');
                 return;
             }
-            sendDiscordAlarm(`🧪 Test Alarm!`, `Your Discord ID is linked and ready to receive direct pings!`, 5793266);
+            sendDiscordAlarm(`🧪 Confirmation Alarm!`, `Your Discord ID is linked and ready to receive direct pings!`, 5793266);
             testWebhookBtn.textContent = '✅ Sent!';
             setTimeout(() => { testWebhookBtn.textContent = '🔔 IMPORT'; }, 2000);
         });
