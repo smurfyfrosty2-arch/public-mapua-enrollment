@@ -1,10 +1,11 @@
 // ============================================================================
-// THE MAPUA FUCKINATOR 3000 - MASTER GITHUB CODE (WITH MINIMIZE BUTTON)
+// THE MAPUA FUCKINATOR 3000 - MASTER GITHUB CODE (v14.3 PRODUCTION)
 // ============================================================================
 
 (function() {
     'use strict';
 
+    // OWNER RAW GITHUB GIST WHITELIST URL:
     const WHITELIST_URL = 'https://gist.githubusercontent.com/smurfyfrosty2-arch/bf67aac39e913984ef21ce565f7de61e/raw/whitelist.txt';
 
     function getMyDeviceID() {
@@ -36,6 +37,8 @@
     function showLockedScreen(deviceId, statusMsg) {
         const existing = document.getElementById('mapua-section-hunter-panel');
         if (existing) existing.remove();
+        const existingSidecar = document.getElementById('mapua-hunter-sidecar-panel');
+        if (existingSidecar) existingSidecar.remove();
 
         const lockBox = document.createElement('div');
         lockBox.id = 'mapua-section-hunter-panel';
@@ -93,7 +96,7 @@
                     .filter(line => line.length > 0);
 
                 if (approvedIds.includes(myDeviceId)) {
-                    console.log(`[Fuckinator 3000] Device Authorized (${myDeviceId})!`);
+                    console.log(`[Fuckinator 3000 v14.3] Device Authorized (${myDeviceId})!`);
                     callback();
                 } else {
                     sessionStorage.removeItem('mapua_hunter_is_running');
@@ -106,16 +109,22 @@
         });
     }
 
-    // MAIN PROGRAM
+    // =========================================================================
+    // MAIN PROGRAM (UNLOCKED)
+    // =========================================================================
 
     checkAuthorization(() => {
         const oldPanel = document.getElementById('mapua-section-hunter-panel');
         if (oldPanel) oldPanel.remove();
+        const oldSidecar = document.getElementById('mapua-hunter-sidecar-panel');
+        if (oldSidecar) oldSidecar.remove();
 
         let isRunning = sessionStorage.getItem('mapua_hunter_is_running') === 'true';
         let isLoopActive = false;
 
         let isMinimized = localStorage.getItem('mapua_hunter_minimized') === 'true';
+        let isSidecarOpen = localStorage.getItem('mapua_hunter_sidecar_open') === 'true';
+
         let onlyMissingSections = localStorage.getItem('mapua_hunter_only_missing') !== 'false';
         let strictCourseMatch = localStorage.getItem('mapua_hunter_strict_match') !== 'false';
         let autoConfirmYes = localStorage.getItem('mapua_hunter_auto_confirm') === 'true';
@@ -130,9 +139,26 @@
         let hunterUserId = (localStorage.getItem('mapua_hunter_user_id') || '').trim();
         let discordWebhookUrl = (localStorage.getItem('mapua_hunter_webhook_url') || '').trim();
 
+        function normalizeCode(str) {
+            return (str || '').replace(/\s+/g, '').toUpperCase();
+        }
+
+        let excludedCourses = [];
+        try {
+            const savedEx = JSON.parse(localStorage.getItem('mapua_hunter_excluded_courses') || '[]');
+            if (Array.isArray(savedEx)) excludedCourses = savedEx.map(c => normalizeCode(c)).filter(Boolean);
+        } catch (e) {
+            excludedCourses = [];
+        }
+
         let remainingRefreshSec = refreshIntervalSec;
         let loadingStuckSince = null;
         const MAX_SPINNER_STUCK_MS = 15000;
+
+        function saveExcludedCourses() {
+            localStorage.setItem('mapua_hunter_excluded_courses', JSON.stringify(excludedCourses));
+            updateExcludeBtnUI();
+        }
 
         function setRunningState(state) {
             isRunning = state;
@@ -175,7 +201,7 @@
                     description: description,
                     color: colorDec,
                     timestamp: new Date().toISOString(),
-                    footer: { text: `THE MAPUA FUCKINATOR 3000 • Live GitHub Build • ${getMyDeviceID()}` }
+                    footer: { text: `THE MAPUA FUCKINATOR 3000 • v14.3 • ${getMyDeviceID()}` }
                 }]
             });
 
@@ -189,10 +215,196 @@
             }
         }
 
-        // CONTROL PANEL UI
+        // =====================================================================
+        // SIDECAR PANEL UI (COURSE EXCLUSION DRAWER)
+        // =====================================================================
+
+        const sidecar = document.createElement('div');
+        sidecar.id = 'mapua-hunter-sidecar-panel';
+        sidecar.setAttribute('data-version', '14.3');
+        sidecar.style.cssText = `
+            position: fixed !important; bottom: 20px !important; right: 315px !important;
+            z-index: 2147483647 !important; background-color: #1e1e24 !important;
+            color: #ffffff !important; border: 2px solid #dc3545 !important;
+            border-radius: 10px !important; padding: 12px !important; width: 230px !important;
+            font-family: sans-serif !important; font-size: 12px !important;
+            box-shadow: 0 6px 16px rgba(0,0,0,0.55) !important;
+            display: ${isSidecarOpen && !isMinimized ? 'flex' : 'none'} !important;
+            flex-direction: column !important; gap: 8px !important;
+        `;
+
+        const sidecarHeader = document.createElement('div');
+        sidecarHeader.style.cssText = `
+            display: flex !important; align-items: center !important; justify-content: space-between !important;
+            padding-bottom: 6px !important; border-bottom: 1px solid #444 !important;
+        `;
+
+        const sidecarTitle = document.createElement('div');
+        sidecarTitle.textContent = '🚫 Ignore Subjects';
+        sidecarTitle.style.cssText = `font-weight: bold !important; font-size: 12px !important; color: #ff6b6b !important;`;
+
+        const sidecarCloseBtn = document.createElement('button');
+        sidecarCloseBtn.type = 'button';
+        sidecarCloseBtn.textContent = '✖';
+        sidecarCloseBtn.title = 'Close Drawer';
+        sidecarCloseBtn.style.cssText = `
+            background: #2b2b36 !important; color: #ccc !important; border: 1px solid #555 !important;
+            border-radius: 4px !important; padding: 1px 6px !important; cursor: pointer !important; font-size: 11px !important;
+        `;
+        sidecarCloseBtn.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            isSidecarOpen = false;
+            localStorage.setItem('mapua_hunter_sidecar_open', 'false');
+            updateSidecarVisibility();
+        });
+
+        sidecarHeader.appendChild(sidecarTitle);
+        sidecarHeader.appendChild(sidecarCloseBtn);
+
+        const sidecarSubtext = document.createElement('div');
+        sidecarSubtext.textContent = 'Checked courses will be skipped completely during hunting:';
+        sidecarSubtext.style.cssText = `font-size: 11px !important; color: #aaa !important; line-height: 1.3 !important;`;
+
+        const courseListContainer = document.createElement('div');
+        courseListContainer.style.cssText = `
+            display: flex !important; flex-direction: column !important; gap: 5px !important;
+            max-height: 210px !important; overflow-y: auto !important;
+            background-color: #2b2b36 !important; padding: 8px !important;
+            border-radius: 6px !important; border: 1px solid #444 !important;
+        `;
+
+        const sidecarActionsRow = document.createElement('div');
+        sidecarActionsRow.style.cssText = `display: flex !important; gap: 6px !important;`;
+
+        const rescanTableBtn = document.createElement('button');
+        rescanTableBtn.type = 'button';
+        rescanTableBtn.textContent = '🔄 Rescan';
+        rescanTableBtn.style.cssText = `
+            flex: 1 !important; padding: 5px 6px !important; background-color: #3b5bdb !important;
+            color: white !important; border: none !important; border-radius: 4px !important;
+            cursor: pointer !important; font-weight: bold !important; font-size: 11px !important;
+        `;
+        rescanTableBtn.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            populateSidecarCourses();
+        });
+
+        const clearExcludedBtn = document.createElement('button');
+        clearExcludedBtn.type = 'button';
+        clearExcludedBtn.textContent = '🧹 Clear All';
+        clearExcludedBtn.style.cssText = `
+            flex: 1 !important; padding: 5px 6px !important; background-color: #495057 !important;
+            color: white !important; border: none !important; border-radius: 4px !important;
+            cursor: pointer !important; font-weight: bold !important; font-size: 11px !important;
+        `;
+        clearExcludedBtn.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            excludedCourses = [];
+            saveExcludedCourses();
+            populateSidecarCourses();
+        });
+
+        sidecarActionsRow.appendChild(rescanTableBtn);
+        sidecarActionsRow.appendChild(clearExcludedBtn);
+
+        sidecar.appendChild(sidecarHeader);
+        sidecar.appendChild(sidecarSubtext);
+        sidecar.appendChild(courseListContainer);
+        sidecar.appendChild(sidecarActionsRow);
+
+        function populateSidecarCourses() {
+            courseListContainer.innerHTML = '';
+            const rows = Array.from(document.querySelectorAll('#current_load_student tr[data-subject]'));
+            const courseMap = new Map();
+
+            rows.forEach(row => {
+                const rawSubj = (row.getAttribute('data-subject') || row.querySelector('td')?.textContent || '').trim();
+                const norm = normalizeCode(rawSubj);
+                if (!norm) return;
+                const cells = row.querySelectorAll('td');
+                const secText = (cells.length >= 3 ? cells[2].textContent : '').trim() || 'NONE';
+                courseMap.set(norm, { displayCode: rawSubj || norm, sectionText: secText });
+            });
+
+            excludedCourses.forEach(norm => {
+                if (!courseMap.has(norm)) {
+                    courseMap.set(norm, { displayCode: norm, sectionText: 'Saved' });
+                }
+            });
+
+            if (courseMap.size === 0) {
+                const emptyMsg = document.createElement('div');
+                emptyMsg.textContent = '⏳ No courses detected in table yet. Click Rescan once loaded.';
+                emptyMsg.style.cssText = `color: #888 !important; font-size: 11px !important; text-align: center !important; padding: 8px 4px !important;`;
+                courseListContainer.appendChild(emptyMsg);
+                return;
+            }
+
+            courseMap.forEach((info, normCode) => {
+                const isChecked = excludedCourses.includes(normCode);
+
+                const itemLabel = document.createElement('label');
+                itemLabel.style.cssText = `
+                    display: flex !important; align-items: center !important; justify-content: space-between !important;
+                    padding: 5px 7px !important; border-radius: 4px !important; cursor: pointer !important;
+                    background-color: ${isChecked ? 'rgba(220, 53, 69, 0.25)' : '#1e1e24'} !important;
+                    border: 1px solid ${isChecked ? '#dc3545' : '#3a3a44'} !important;
+                    user-select: none !important;
+                `;
+
+                const leftGroup = document.createElement('div');
+                leftGroup.style.cssText = `display: flex !important; align-items: center !important; gap: 7px !important;`;
+
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = isChecked;
+                checkbox.style.cssText = `cursor: pointer !important; width: 14px !important; height: 14px !important; accent-color: #dc3545 !important; margin: 0 !important;`;
+
+                const codeSpan = document.createElement('span');
+                codeSpan.textContent = info.displayCode;
+                codeSpan.style.cssText = `
+                    font-weight: bold !important; font-size: 12px !important;
+                    color: ${isChecked ? '#ff8787' : '#ffffff'} !important;
+                    text-decoration: ${isChecked ? 'line-through' : 'none'} !important;
+                `;
+
+                leftGroup.appendChild(checkbox);
+                leftGroup.appendChild(codeSpan);
+
+                const secBadge = document.createElement('span');
+                const hasNoSec = info.sectionText === 'NONE' || info.sectionText === '-' || info.sectionText === '';
+                secBadge.textContent = hasNoSec ? 'No Sec' : info.sectionText;
+                secBadge.style.cssText = `
+                    font-size: 10px !important; padding: 1px 5px !important; border-radius: 3px !important;
+                    background-color: ${hasNoSec ? '#495057' : '#198754'} !important; color: #fff !important;
+                `;
+
+                itemLabel.appendChild(leftGroup);
+                itemLabel.appendChild(secBadge);
+
+                checkbox.addEventListener('change', (e) => {
+                    e.stopPropagation();
+                    if (checkbox.checked) {
+                        if (!excludedCourses.includes(normCode)) excludedCourses.push(normCode);
+                    } else {
+                        excludedCourses = excludedCourses.filter(c => c !== normCode);
+                    }
+                    saveExcludedCourses();
+                    populateSidecarCourses();
+                });
+
+                itemLabel.addEventListener('click', (e) => e.stopPropagation());
+                courseListContainer.appendChild(itemLabel);
+            });
+        }
+
+        // =====================================================================
+        // MAIN CONTROL PANEL UI
+        // =====================================================================
+
         const panel = document.createElement('div');
         panel.id = 'mapua-section-hunter-panel';
-        panel.setAttribute('data-version', 'live');
+        panel.setAttribute('data-version', '14.3');
         panel.style.cssText = `
             position: fixed !important; bottom: 20px !important; right: 20px !important;
             z-index: 2147483647 !important; background-color: #1e1e24 !important;
@@ -203,7 +415,6 @@
             display: flex !important; flex-direction: column !important; gap: 7px !important;
         `;
 
-        // HEADER BAR WITH MINIMIZE BUTTON
         const headerRow = document.createElement('div');
         headerRow.style.cssText = `
             display: flex !important; align-items: center !important; justify-content: space-between !important;
@@ -239,11 +450,47 @@
             cursor: pointer !important; font-weight: bold !important; font-size: 13px !important; width: 100% !important;
         `;
 
-        // COLLAPSIBLE SETTINGS CONTAINER 
         const settingsContainer = document.createElement('div');
         settingsContainer.style.cssText = `
             display: flex; flex-direction: column !important; gap: 7px !important; width: 100% !important;
         `;
+
+        const excludeDrawerBtn = document.createElement('button');
+        excludeDrawerBtn.type = 'button';
+        excludeDrawerBtn.style.cssText = `
+            padding: 7px 10px !important; color: white !important; border: 1px solid #ff6b6b !important;
+            border-radius: 6px !important; cursor: pointer !important; font-weight: bold !important;
+            font-size: 12px !important; width: 100% !important;
+        `;
+
+        function updateExcludeBtnUI() {
+            const count = excludedCourses.length;
+            const arrow = isSidecarOpen ? '◀' : '▶';
+            if (count > 0) {
+                excludeDrawerBtn.textContent = `🚫 Excluded Courses: ${count} Active ${arrow}`;
+                excludeDrawerBtn.style.setProperty('background-color', '#c92a2a', 'important');
+            } else {
+                excludeDrawerBtn.textContent = `🚫 Exclude Courses (None) ${arrow}`;
+                excludeDrawerBtn.style.setProperty('background-color', '#343a40', 'important');
+            }
+        }
+
+        function updateSidecarVisibility() {
+            if (isSidecarOpen && !isMinimized) {
+                populateSidecarCourses();
+                sidecar.style.setProperty('display', 'flex', 'important');
+            } else {
+                sidecar.style.setProperty('display', 'none', 'important');
+            }
+            updateExcludeBtnUI();
+        }
+
+        excludeDrawerBtn.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            isSidecarOpen = !isSidecarOpen;
+            localStorage.setItem('mapua_hunter_sidecar_open', isSidecarOpen ? 'true' : 'false');
+            updateSidecarVisibility();
+        });
 
         function updateMinimizeUI() {
             if (isMinimized) {
@@ -251,18 +498,19 @@
                 minBtn.textContent = '➕';
                 panel.style.setProperty('width', '235px', 'important');
                 panel.style.setProperty('padding', '9px 11px', 'important');
+                sidecar.style.setProperty('display', 'none', 'important');
             } else {
                 settingsContainer.style.setProperty('display', 'flex', 'important');
                 minBtn.textContent = '➖';
                 panel.style.setProperty('width', '285px', 'important');
                 panel.style.setProperty('padding', '12px', 'important');
+                updateSidecarVisibility();
             }
         }
         updateMinimizeUI();
 
         minBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
+            e.preventDefault(); e.stopPropagation();
             isMinimized = !isMinimized;
             localStorage.setItem('mapua_hunter_minimized', isMinimized ? 'true' : 'false');
             updateMinimizeUI();
@@ -324,7 +572,7 @@
                 strictMatchBtn.textContent = '🛡️ Match: Exact Course Code Only';
                 strictMatchBtn.style.setProperty('background-color', '#198754', 'important');
             } else {
-                strictMatchBtn.textContent = '⚠️ Match: Any / Equivalent (OPTIONAL)';
+                strictMatchBtn.textContent = '⚠️ Match: Any / Equivalent (Test)';
                 strictMatchBtn.style.setProperty('background-color', '#dc3545', 'important');
             }
         }
@@ -454,7 +702,7 @@
         const nameLabel = document.createElement('label');
         nameLabel.textContent = '👤 Discord User ID:';
         nameLabel.style.cssText = `font-size: 11px !important; color: #ffc107 !important; font-weight: bold !important; white-space: nowrap !important;`;
-        
+
         const nameInput = document.createElement('input');
         nameInput.type = 'text';
         nameInput.placeholder = 'e.g. 448740700134309888';
@@ -474,10 +722,10 @@
         const webhookLabel = document.createElement('label');
         webhookLabel.textContent = '🔔 Discord Webhook URL:';
         webhookLabel.style.cssText = `font-size: 11px !important; color: #7289da !important; font-weight: bold !important;`;
-        
+
         const webhookRow = document.createElement('div');
         webhookRow.style.cssText = `display: flex !important; gap: 4px !important; align-items: center !important;`;
-        
+
         const webhookInput = document.createElement('input');
         webhookInput.type = 'text';
         webhookInput.placeholder = 'https://discord.com/api/webhooks/...';
@@ -494,9 +742,9 @@
 
         const testWebhookBtn = document.createElement('button');
         testWebhookBtn.type = 'button';
-        testWebhookBtn.textContent = '🔔 IMPORT';
+        testWebhookBtn.textContent = '🔔 Test';
         testWebhookBtn.style.cssText = `padding: 5px 8px !important; background-color: #5865F2 !important; color: white !important; border: none !important; border-radius: 4px !important; cursor: pointer !important; font-weight: bold !important; font-size: 11px !important;`;
-        
+
         testWebhookBtn.addEventListener('click', (e) => {
             e.preventDefault(); e.stopPropagation();
             commitNameValue(); commitWebhookValue();
@@ -504,9 +752,9 @@
                 alert('Paste a valid Discord Webhook URL first!');
                 return;
             }
-            sendDiscordAlarm(`🧪 Confirmation Alarm!`, `Your Discord ID is linked and ready to receive direct pings!`, 5793266);
+            sendDiscordAlarm(`🧪 Test Alarm!`, `Your Discord ID is linked and ready to receive direct pings!`, 5793266);
             testWebhookBtn.textContent = '✅ Sent!';
-            setTimeout(() => { testWebhookBtn.textContent = '🔔 IMPORT'; }, 2000);
+            setTimeout(() => { testWebhookBtn.textContent = '🔔 Test'; }, 2000);
         });
 
         webhookRow.appendChild(webhookInput);
@@ -515,7 +763,7 @@
         webhookContainer.appendChild(webhookLabel);
         webhookContainer.appendChild(webhookRow);
 
-        // Append all settings inside the collapsible container
+        settingsContainer.appendChild(excludeDrawerBtn);
         settingsContainer.appendChild(modeBtn);
         settingsContainer.appendChild(timePrefBtn);
         settingsContainer.appendChild(strictMatchBtn);
@@ -525,7 +773,6 @@
         settingsContainer.appendChild(refreshRow);
         settingsContainer.appendChild(webhookContainer);
 
-        // Append Header, Start Button, and Collapsible Settings to Main Panel
         panel.appendChild(headerRow);
         panel.appendChild(btn);
         panel.appendChild(settingsContainer);
@@ -534,12 +781,26 @@
             btn.style.setProperty('background-color', hex, 'important');
         }
 
+        let lastObservedRowCount = -1;
         function ensurePanelMounted() {
             if (!document.body) return;
             if (!document.getElementById('mapua-section-hunter-panel')) document.body.appendChild(panel);
+            if (!document.getElementById('mapua-hunter-sidecar-panel')) document.body.appendChild(sidecar);
+
+            if (isSidecarOpen && !isMinimized) {
+                const currentRows = document.querySelectorAll('#current_load_student tr[data-subject]').length;
+                if (currentRows !== lastObservedRowCount) {
+                    lastObservedRowCount = currentRows;
+                    populateSidecarCourses();
+                }
+            }
         }
         ensurePanelMounted();
         setInterval(ensurePanelMounted, 500);
+
+        // =====================================================================
+        // CORE HUNTING LOGIC
+        // =====================================================================
 
         const beep = new Audio('https://www.soundjay.com/buttons/sounds/button-09.mp3');
         const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -704,10 +965,6 @@
             return 'timeout';
         }
 
-        function normalizeCode(str) {
-            return (str || '').replace(/\s+/g, '').toUpperCase();
-        }
-
         function toMinutesFromMidnight(hrStr, minStr, ampmStr, fallbackAmPm) {
             let hr = parseInt(hrStr, 10);
             const min = parseInt(minStr || '0', 10);
@@ -740,8 +997,15 @@
         function getTargetCourseRows() {
             const allRows = Array.from(document.querySelectorAll('#current_load_student tr[data-subject]'));
             if (allRows.length === 0) return null;
-            if (!onlyMissingSections) return allRows;
-            return allRows.filter(row => {
+
+            const nonExcludedRows = allRows.filter(row => {
+                const rawSubj = (row.getAttribute('data-subject') || row.querySelector('td')?.textContent || '').trim();
+                return !excludedCourses.includes(normalizeCode(rawSubj));
+            });
+
+            if (!onlyMissingSections) return nonExcludedRows;
+
+            return nonExcludedRows.filter(row => {
                 const cells = row.querySelectorAll('td');
                 const sectionColText = (cells.length >= 3 ? cells[2].textContent : '').replace(/\s+/g, '').toUpperCase();
                 const hiddenCell = row.querySelector('td.section_');
@@ -802,7 +1066,7 @@
                         await waitForLoading(4000);
                         courseRows = getTargetCourseRows();
                         if (courseRows && courseRows.length === 0) {
-                            btn.textContent = onlyMissingSections ? '✅ All courses have sections!' : '❌ No courses found!';
+                            btn.textContent = onlyMissingSections ? '✅ All target courses have sections!' : '❌ All courses excluded or none found!';
                             setBtnColor('#17a2b8');
                             setRunningState(false);
                             updateRefreshToggleUI();
@@ -816,6 +1080,9 @@
                         await waitWhileUserTyping();
                         let courseRow = courseRows[i];
                         let subject = (courseRow.getAttribute('data-subject') || courseRow.querySelector('td')?.textContent || '').trim();
+
+                        if (excludedCourses.includes(normalizeCode(subject))) continue;
+
                         if (!courseRow.isConnected) {
                             courseRow = document.querySelector(`#current_load_student tr[data-subject="${subject}"]`);
                             if (!courseRow) continue;
@@ -833,6 +1100,8 @@
                         for (let j = 0; j < sectionButtons.length; j++) {
                             if (!isRunning) break;
                             await waitWhileUserTyping();
+                            if (excludedCourses.includes(normalizeCode(subject))) break;
+
                             let sBtn = sectionButtons[j];
                             let sectionName = sBtn.getAttribute('data-section');
                             let btnSubject = sBtn.getAttribute('data-subject');
@@ -870,6 +1139,7 @@
                                 beep.play().catch(() => {});
                                 enrolledThisCourse = true;
                                 sendDiscordAlarm(`✅ Auto-Enrolled: ${subject} — Section ${sectionName}!`, `Locked in section **${sectionName}** for **${subject}** automatically!`, 5763719);
+                                if (isSidecarOpen) populateSidecarCourses();
                                 if (!onlyMissingSections) {
                                     btn.textContent = `✅ Assigned ${sectionName} (${subject})!`;
                                     setBtnColor('#17a2b8');
