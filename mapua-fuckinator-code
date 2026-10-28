@@ -1,28 +1,35 @@
 // ============================================================================
-// THE MAPUA FUCKINATOR 3000 - MASTER GITHUB CODE (v14.5.4 PRODUCTION)
+// THE MAPUA FUCKINATOR 3000 - MASTER GITHUB CODE (v14.6.5 PRODUCTION)
 // Features:
+//  • 100% Compatible with Tampermonkey v14.2 Loader (Zero client-side changes needed)
 //  • Hardware Device ID Whitelist Verification
-//  • 2-Way Discord ✅/❌ Reaction Submittance via Keyed Cloudflare Worker Relay
-//  • 100% Compatible with Tampermonkey v14.2 Loader (No @connect changes needed)
-//  • Declined Section Memory (Cycle Mode vs. Ignore Forever, Active Only When Auto-Accept is OFF)
+//  • 2-Way Discord ✅/❌ Reaction Submittance via Keyed Cloudflare Worker Relay (429 Auto-Backoff)
+//  • Smart Conflict & Skip Memory (Configurable Strike Threshold + Auto-Reset on Load Change)
+//  • Per-Course Day Filter & Priority (1x Red = Avoid Day, 2x Green = Priority Want Day)
+//  • True Equivalent Course Tracking ("COURSE: SECTION" in Discord & UI)
+//  • 2-Stage Session Loss / MultipleBrowser.aspx Recovery Prompt via Discord
 //  • One-Time Remote Gist Changelog Notifier
-//  • Sidecar Course Exclusion Drawer + Minimize Toggle
 // ============================================================================
 
 (function() {
     'use strict';
 
-    // 👉 1. OWNER RAW GITHUB GIST WHITELIST URL:
+    // OWNER RAW GITHUB GIST WHITELIST URL:
     const WHITELIST_URL = 'https://gist.githubusercontent.com/smurfyfrosty2-arch/bf67aac39e913984ef21ce565f7de61e/raw/whitelist.txt';
 
-    // 👉 2. RAW CHANGELOG GIST URL:
+    // RAW CHANGELOG GIST URL:
     const CHANGELOG_URL = 'https://gist.githubusercontent.com/smurfyfrosty2-arch/704f4178c6cba8c382953fbf8dcd1510/raw/changelog.txt';
 
-    // 👉 3. CLOUDFLARE WORKER RELAY URL + SHARED KEY:
+    // CLOUDFLARE WORKER RELAY URL + SHARED KEY:
     const CLOUDFLARE_RELAY_URL = 'https://mapua-discord-relay.gabtheus1299.workers.dev';
     const RELAY_KEY = 'iamusingcalcheeseastherelaykeyforthishunkofjunk111406';
 
     const DISCORD_DECISION_TIMEOUT_SEC = 60;
+    const DAYS_ORDER = ['M', 'T', 'W', 'TH', 'F', 'S', 'SU'];
+
+    const HOME_URL = 'https://my.mapua.edu.ph/Student/Default.aspx';
+    const MANAGE_SECTION_URL = 'https://my.mapua.edu.ph/Student/ManageSection.aspx';
+    const MULTI_BROWSER_URL = 'https://my.mapua.edu.ph/Error/MultipleBrowser.aspx';
 
     function getMyDeviceID() {
         try {
@@ -112,7 +119,7 @@
                     .filter(line => line.length > 0);
 
                 if (approvedIds.includes(myDeviceId)) {
-                    console.log(`[Fuckinator 3000 v14.5.4] Device Authorized (${myDeviceId})!`);
+                    console.log(`[Fuckinator 3000 v14.6.5] Device Authorized (${myDeviceId})!`);
                     callback();
                 } else {
                     sessionStorage.removeItem('mapua_hunter_is_running');
@@ -137,7 +144,9 @@
 
         // ---- STATE & LOCALSTORAGE ----
         let isRunning = sessionStorage.getItem('mapua_hunter_is_running') === 'true';
+        let isRedirectExhausted = sessionStorage.getItem('mapua_hunter_redirect_exhausted') === 'true';
         let isLoopActive = false;
+        let isRecoveryPromptActive = false;
 
         let isMinimized = localStorage.getItem('mapua_hunter_minimized') === 'true';
         let isSidecarOpen = localStorage.getItem('mapua_hunter_sidecar_open') === 'true';
@@ -156,8 +165,42 @@
         let hunterUserId = (localStorage.getItem('mapua_hunter_user_id') || '').trim();
         let discordWebhookUrl = (localStorage.getItem('mapua_hunter_webhook_url') || '').trim();
 
+        function setRedirectExhausted(state) {
+            isRedirectExhausted = state;
+            if (state) sessionStorage.setItem('mapua_hunter_redirect_exhausted', 'true');
+            else sessionStorage.removeItem('mapua_hunter_redirect_exhausted');
+        }
+
         function normalizeCode(str) {
             return (str || '').replace(/\s+/g, '').toUpperCase();
+        }
+
+        function resolveActualSectionCourse(sBtn, fallbackSubject) {
+            if (!sBtn) return (fallbackSubject || '').trim();
+            const btnSubj = (sBtn.getAttribute('data-subject') || '').trim();
+            if (btnSubj) return btnSubj;
+
+            const parentTr = sBtn.closest('tr');
+            const rowSubj = (parentTr ? parentTr.getAttribute('data-course') : '' || '').trim();
+            if (rowSubj) return rowSubj;
+
+            const parentTable = sBtn.closest('table.course_table_schedule');
+            if (parentTable) {
+                const spanSubj = (parentTable.querySelector('span.course')?.textContent || '').trim();
+                if (spanSubj) return spanSubj;
+                const tableSubj = (parentTable.getAttribute('data-section') || '').trim();
+                if (tableSubj) return tableSubj;
+            }
+            return (fallbackSubject || '').trim();
+        }
+
+        function formatCourseDisplay(actualCourse, targetSubject) {
+            const normAct = normalizeCode(actualCourse);
+            const normTgt = normalizeCode(targetSubject);
+            if (normAct && normTgt && normAct !== normTgt) {
+                return `${actualCourse} (for ${targetSubject})`;
+            }
+            return actualCourse || targetSubject;
         }
 
         let excludedCourses = [];
@@ -168,56 +211,245 @@
             excludedCourses = [];
         }
 
-        // ---- DECLINED SECTIONS TRACKER (ONLY ACTIVE WHEN AUTO-ACCEPT IS OFF) ----
-        let declineMode = localStorage.getItem('mapua_hunter_decline_mode') || 'cycle';
-        if (declineMode !== 'cycle' && declineMode !== 'forever') declineMode = 'cycle';
+        // =====================================================================
+        // SMART CONFLICT & SKIP MEMORY (TRACKED BY ACTUAL COURSE + SECTION)
+        // =====================================================================
+        let conflictStrikeLimit = parseInt(localStorage.getItem('mapua_hunter_conflict_limit'), 10);
+        if (isNaN(conflictStrikeLimit) || conflictStrikeLimit < 1) conflictStrikeLimit = 5;
 
-        let recheckCycles = parseInt(localStorage.getItem('mapua_hunter_recheck_cycles'), 10);
-        if (isNaN(recheckCycles) || recheckCycles < 1) recheckCycles = 3;
-
-        let cycleCount = parseInt(localStorage.getItem('mapua_hunter_cycle_count'), 10) || 0;
-        let declinedSections = {};
+        let conflictMemory = {};
         try {
-            declinedSections = JSON.parse(localStorage.getItem('mapua_hunter_declined') || '{}') || {};
-        } catch (e) { declinedSections = {}; }
-
-        function declineKey(subject, sectionName) {
-            return normalizeCode(subject) + '|' + normalizeCode(sectionName);
+            conflictMemory = JSON.parse(localStorage.getItem('mapua_hunter_conflict_memory') || '{}') || {};
+        } catch (e) {
+            conflictMemory = {};
         }
-        function saveDeclined() {
-            localStorage.setItem('mapua_hunter_declined', JSON.stringify(declinedSections));
-            if (typeof updateDeclinedBtnUI === 'function') updateDeclinedBtnUI();
+
+        let lastLoadSignature = localStorage.getItem('mapua_hunter_load_sig') || '';
+
+        function sectionKey(actualCourse, sectionName) {
+            return normalizeCode(actualCourse) + '|' + normalizeCode(sectionName);
         }
-        function markDeclined(subject, sectionName) {
-            if (autoConfirmYes) return;
-            declinedSections[declineKey(subject, sectionName)] = {
-                subject,
-                section: sectionName,
-                cycle: cycleCount
-            };
-            saveDeclined();
+
+        function saveConflictMemory() {
+            localStorage.setItem('mapua_hunter_conflict_memory', JSON.stringify(conflictMemory));
+            if (typeof updateIgnoredBtnUI === 'function') updateIgnoredBtnUI();
         }
-        function isSectionDeclined(subject, sectionName) {
-            if (autoConfirmYes) return false;
 
-            const key = declineKey(subject, sectionName);
-            const entry = declinedSections[key];
-            if (!entry) return false;
-
-            if (declineMode === 'forever') return true;
-
-            const cyclesElapsed = cycleCount - (typeof entry.cycle === 'number' ? entry.cycle : 0);
-            if (cyclesElapsed >= recheckCycles) {
-                delete declinedSections[key];
-                saveDeclined();
-                return false;
+        function recordConflictStrike(actualCourse, sectionName) {
+            const key = sectionKey(actualCourse, sectionName);
+            if (!conflictMemory[key]) {
+                conflictMemory[key] = { subject: actualCourse, section: sectionName, strikes: 0, ignored: false, reason: 'conflict' };
             }
-            return true;
+            conflictMemory[key].subject = actualCourse;
+            conflictMemory[key].section = sectionName;
+            conflictMemory[key].strikes = (conflictMemory[key].strikes || 0) + 1;
+            if (conflictMemory[key].strikes >= conflictStrikeLimit) {
+                conflictMemory[key].ignored = true;
+                console.log(`[Conflict Memory] 🚫 ${actualCourse}: ${sectionName} hit ${conflictMemory[key].strikes}/${conflictStrikeLimit} conflicts — now IGNORED.`);
+            } else {
+                console.log(`[Conflict Memory] ⚠️ ${actualCourse}: ${sectionName} conflict strike ${conflictMemory[key].strikes}/${conflictStrikeLimit}`);
+            }
+            saveConflictMemory();
         }
-        function bumpCycle() {
-            if (autoConfirmYes) return;
-            cycleCount++;
-            localStorage.setItem('mapua_hunter_cycle_count', String(cycleCount));
+
+        function markSectionSkippedImmediately(actualCourse, sectionName, reason = 'manual-skip') {
+            const key = sectionKey(actualCourse, sectionName);
+            conflictMemory[key] = {
+                subject: actualCourse,
+                section: sectionName,
+                strikes: conflictStrikeLimit,
+                ignored: true,
+                reason
+            };
+            saveConflictMemory();
+        }
+
+        function isSectionIgnored(actualCourse, sectionName) {
+            const key = sectionKey(actualCourse, sectionName);
+            const entry = conflictMemory[key];
+            if (!entry) return false;
+            return Boolean(entry.ignored || (entry.strikes >= conflictStrikeLimit));
+        }
+
+        function clearAllConflictMemory() {
+            conflictMemory = {};
+            saveConflictMemory();
+        }
+
+        function checkScheduleLoadChanges() {
+            const rows = Array.from(document.querySelectorAll('#current_load_student tr[data-subject]'));
+            if (rows.length === 0) return;
+
+            const sigParts = rows.map(row => {
+                const rawSubj = normalizeCode(row.getAttribute('data-subject') || row.querySelector('td')?.textContent || '');
+                const cells = row.querySelectorAll('td');
+                const secText = normalizeCode(cells.length >= 3 ? cells[2].textContent : '');
+                return `${rawSubj}:${secText}`;
+            }).sort();
+
+            const currentSig = sigParts.join(';');
+            if (lastLoadSignature && lastLoadSignature !== currentSig) {
+                console.log('[Conflict Memory] 🔄 Enrolled schedule changed! Resetting conflict strikes to re-evaluate sections.');
+                clearAllConflictMemory();
+            }
+            lastLoadSignature = currentSig;
+            localStorage.setItem('mapua_hunter_load_sig', currentSig);
+        }
+
+        // =====================================================================
+        // PER-COURSE DAY FILTER & PRIORITY PARSER
+        // =====================================================================
+        let courseDayPrefs = {};
+        try {
+            courseDayPrefs = JSON.parse(localStorage.getItem('mapua_hunter_day_prefs') || '{}') || {};
+        } catch (e) {
+            courseDayPrefs = {};
+        }
+
+        function saveCourseDayPrefs() {
+            localStorage.setItem('mapua_hunter_day_prefs', JSON.stringify(courseDayPrefs));
+            if (typeof updateExcludeBtnUI === 'function') updateExcludeBtnUI();
+        }
+
+        function getCourseDayPref(normCourse) {
+            if (!courseDayPrefs[normCourse]) {
+                courseDayPrefs[normCourse] = { want: [], avoid: [] };
+            }
+            return courseDayPrefs[normCourse];
+        }
+
+        function toggleCourseDayState(normCourse, dayCode) {
+            const pref = getCourseDayPref(normCourse);
+            const inAvoid = pref.avoid.includes(dayCode);
+            const inWant = pref.want.includes(dayCode);
+
+            if (!inAvoid && !inWant) {
+                pref.avoid.push(dayCode);
+            } else if (inAvoid) {
+                pref.avoid = pref.avoid.filter(d => d !== dayCode);
+                pref.want.push(dayCode);
+            } else {
+                pref.want = pref.want.filter(d => d !== dayCode);
+            }
+            saveCourseDayPrefs();
+        }
+
+        function extractDaysFromRow(trElement, sectionName = '', courseCode = '') {
+            if (!trElement) return [];
+            const cells = Array.from(trElement.querySelectorAll('td'));
+
+            let rawText = cells
+                .filter(td => !td.querySelector('button'))
+                .map(td => td.textContent || '')
+                .join(' | ')
+                .toUpperCase();
+
+            if (!rawText) rawText = (trElement.textContent || '').toUpperCase();
+
+            if (courseCode) {
+                const escCourse = courseCode.toUpperCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                rawText = rawText.replace(new RegExp(escCourse, 'g'), ' ');
+            }
+            if (sectionName) {
+                const escSec = sectionName.toUpperCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                rawText = rawText.replace(new RegExp(`\\b${escSec}\\b`, 'g'), ' ');
+            }
+
+            rawText = rawText.replace(/\d{1,2}:\d{2}\s*(?:AM|PM)?/gi, ' ');
+            rawText = rawText.replace(/\b(ONLINE|SYNC|ASYNC|SYNCHRONOUS|ASYNCHRONOUS|TBA|ROOM|RM|LEC|LAB|ADD|SECTION|BLDG|FLOOR|NW|SW|NE|SE|NORTH|SOUTH|WEST|EAST|CAMPUS|MAKATI|INTRAMUROS)\b/g, ' ');
+            rawText = rawText.replace(/\b[A-Z]*\d+[A-Z0-9-]*\b/g, ' ');
+
+            const foundDays = new Set();
+
+            const wordMap = [
+                [/\b(THURSDAY|THURS|THUR|THU)\b/g, 'TH'],
+                [/\b(SUNDAY|SUN)\b/g, 'SU'],
+                [/\b(MONDAY|MON)\b/g, 'M'],
+                [/\b(TUESDAY|TUES|TUE)\b/g, 'T'],
+                [/\b(WEDNESDAY|WED)\b/g, 'W'],
+                [/\b(FRIDAY|FRI)\b/g, 'F'],
+                [/\b(SATURDAY|SAT)\b/g, 'S']
+            ];
+            for (const [regex, code] of wordMap) {
+                if (regex.test(rawText)) {
+                    foundDays.add(code);
+                    rawText = rawText.replace(regex, ' ');
+                }
+            }
+
+            const cleanTokens = rawText.replace(/[^A-Z]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+
+            for (const tok of cleanTokens) {
+                if (!/^[MTWHFSU]+$/.test(tok)) continue;
+                if (/^H+$/.test(tok) || /^U+$/.test(tok)) continue;
+
+                let rem = tok;
+                if (rem.includes('TH')) {
+                    foundDays.add('TH');
+                    rem = rem.replace(/TH/g, '');
+                }
+                if (rem.includes('SU')) {
+                    foundDays.add('SU');
+                    rem = rem.replace(/SU/g, '');
+                }
+                if (rem.includes('H') || rem.includes('U')) continue;
+
+                for (const ch of rem) {
+                    if (ch === 'M') foundDays.add('M');
+                    else if (ch === 'T') foundDays.add('T');
+                    else if (ch === 'W') foundDays.add('W');
+                    else if (ch === 'F') foundDays.add('F');
+                    else if (ch === 'S') foundDays.add('S');
+                }
+            }
+
+            return Array.from(foundDays);
+        }
+
+        function getEffectiveDayPref(targetSubject, actualCourse) {
+            const normTgt = normalizeCode(targetSubject);
+            const normAct = normalizeCode(actualCourse);
+
+            const p1 = courseDayPrefs[normTgt] || { want: [], avoid: [] };
+            const p2 = (normAct && normAct !== normTgt && courseDayPrefs[normAct]) ? courseDayPrefs[normAct] : { want: [], avoid: [] };
+
+            const avoid = Array.from(new Set([...(p1.avoid || []), ...(p2.avoid || [])]));
+            const want = Array.from(new Set([...(p1.want || []), ...(p2.want || [])]));
+            return { avoid, want };
+        }
+
+        function evaluateRowDayPreference(targetSubject, actualCourse, sectionName, trElement) {
+            const pref = getEffectiveDayPref(targetSubject, actualCourse);
+            if (pref.avoid.length === 0 && pref.want.length === 0) {
+                return { allowed: true, score: 0, days: [] };
+            }
+
+            const rowDays = extractDaysFromRow(trElement, sectionName, actualCourse || targetSubject);
+
+            if (rowDays.length === 0) {
+                if (pref.want.length > 0) return { allowed: false, score: -500, days: [] };
+                return { allowed: true, score: 0, days: [] };
+            }
+
+            for (const avoidDay of pref.avoid) {
+                if (rowDays.includes(avoidDay)) {
+                    console.log(`[Day Filter] 🚫 Skipping ${actualCourse}: ${sectionName} (Days: ${rowDays.join('/')}) — hits avoided day ${avoidDay}`);
+                    return { allowed: false, score: -999, days: rowDays };
+                }
+            }
+
+            if (pref.want.length > 0) {
+                const matchedWantCount = rowDays.filter(d => pref.want.includes(d)).length;
+                if (matchedWantCount === 0) {
+                    console.log(`[Day Filter] ⏭️ Skipping ${actualCourse}: ${sectionName} (Days: ${rowDays.join('/')}) — does not match wanted days (${pref.want.join('/')})`);
+                    return { allowed: false, score: -500, days: rowDays };
+                }
+                const unmatchedCount = rowDays.length - matchedWantCount;
+                const score = (matchedWantCount * 20) - (unmatchedCount * 5);
+                return { allowed: true, score, days: rowDays };
+            }
+
+            return { allowed: true, score: 1, days: rowDays };
         }
 
         let remainingRefreshSec = refreshIntervalSec;
@@ -233,11 +465,7 @@
         function setRunningState(state) {
             isRunning = state;
             sessionStorage.setItem('mapua_hunter_is_running', state ? 'true' : 'false');
-        }
-
-        function triggerSafeReload(reason) {
-            console.warn(`[Hunter Failsafe] Reloading page (${reason})...`);
-            window.location.href = window.location.pathname + window.location.search;
+            if (state) setRedirectExhausted(false);
         }
 
         function makeInputTypeable(inputEl, onCommit) {
@@ -284,7 +512,7 @@
                         description: description,
                         color: colorDec,
                         timestamp: new Date().toISOString(),
-                        footer: { text: `THE MAPUA FUCKINATOR 3000 • v14.5.4 • ${getMyDeviceID()}` }
+                        footer: { text: `THE MAPUA FUCKINATOR 3000 • v14.6.5 • ${getMyDeviceID()}` }
                     }]
                 });
 
@@ -373,10 +601,10 @@
         setTimeout(() => checkAndSendChangelog(false), 2000);
 
         // =====================================================================
-        // SECURE CLOUDFLARE WORKER RELAY COMMUNICATOR (FETCH + KEY, v14.2 SAFE)
+        // SECURE CLOUDFLARE WORKER RELAY COMMUNICATOR (FETCH + 429 BACKOFF)
         // =====================================================================
 
-        async function callDiscordRelay(payload) {
+        async function callDiscordRelay(payload, attempt = 0) {
             try {
                 const res = await fetch(CLOUDFLARE_RELAY_URL, {
                     method: 'POST',
@@ -389,28 +617,33 @@
                 const raw = await res.text();
                 let data = null;
                 try { data = raw ? JSON.parse(raw) : null; } catch (e) {}
+
+                if (res.status === 429 && attempt < 4) {
+                    const retrySec = (data && typeof data.retry_after === 'number') ? data.retry_after : 0.5;
+                    const waitMs = Math.max(150, Math.ceil(retrySec * 1000) + 120);
+                    await sleep(waitMs);
+                    return callDiscordRelay(payload, attempt + 1);
+                }
+
                 const ok = res.status >= 200 && res.status < 300;
-                if (!ok) console.warn(`[Relay ${payload.action}] HTTP ${res.status}:`, raw);
+                if (!ok && res.status !== 429) {
+                    console.warn(`[Relay ${payload.action}] HTTP ${res.status}:`, raw);
+                }
                 return { status: res.status, ok, data, raw };
             } catch (e) {
                 return { status: 0, ok: false, data: null, raw: String(e) };
             }
         }
 
-        async function addBotReaction(channelId, messageId, emojiChar, attempt = 0) {
+        async function addBotReaction(channelId, messageId, emojiChar) {
             const res = await callDiscordRelay({ action: 'react', channelId, messageId, emoji: emojiChar });
             if (res.status === 204 || res.status === 200) return { ok: true, status: res.status };
-            if (res.status === 429 && attempt < 3) {
-                const wait = Math.ceil(((res.data && res.data.retry_after) || 1) * 1000);
-                await sleep(wait + 100);
-                return addBotReaction(channelId, messageId, emojiChar, attempt + 1);
-            }
             return { ok: false, status: res.status, error: res.raw };
         }
 
         async function seedYesNoReactionsOnMessage(channelId, messageId) {
             const r1 = await addBotReaction(channelId, messageId, '✅');
-            await sleep(350);
+            await sleep(400);
             const r2 = await addBotReaction(channelId, messageId, '❌');
             return { checkOk: r1.ok, crossOk: r2.ok, status: r1.status || r2.status, error: r1.error || r2.error };
         }
@@ -425,14 +658,12 @@
             return (res.ok && Array.isArray(res.data)) ? res.data : [];
         }
 
-        async function waitForDiscordOrManualDecision(subject, sectionName, webhookMsgData) {
+        async function pollDiscordYesNoDecision(webhookMsgData, timeoutSec, onTickLabel) {
             const cleanTargetUserId = (hunterUserId || '').replace(/[^0-9]/g, '');
             const workerConfigured = Boolean(CLOUDFLARE_RELAY_URL && CLOUDFLARE_RELAY_URL.startsWith('https://'));
             const hasMsg = webhookMsgData && webhookMsgData.channel_id && webhookMsgData.id;
 
-            if (!workerConfigured || !hasMsg) {
-                return 'manual-only';
-            }
+            if (!workerConfigured || !hasMsg) return 'manual-only';
 
             const channelId = webhookMsgData.channel_id;
             const alarmMessageId = webhookMsgData.id;
@@ -448,27 +679,30 @@
                 return 'manual-only';
             }
 
-            const deadline = Date.now() + (DISCORD_DECISION_TIMEOUT_SEC * 1000);
+            const deadline = Date.now() + (timeoutSec * 1000);
             let loopCount = 0;
 
             while (Date.now() < deadline) {
-                const curModal = document.querySelector('.swal-overlay--show-modal .swal-icon--info');
-                if (!curModal) {
-                    return 'answered-on-screen';
+                const remainingSec = Math.max(1, Math.ceil((deadline - Date.now()) / 1000));
+                if (typeof onTickLabel === 'function') {
+                    const earlyExit = onTickLabel(remainingSec);
+                    if (earlyExit) return earlyExit;
                 }
 
-                const remainingSec = Math.max(1, Math.ceil((deadline - Date.now()) / 1000));
-                btn.textContent = `📱 React ✅/❌ on Discord (${remainingSec}s)`;
-
-                const [yesReactors, noReactors] = await Promise.all([
-                    getReactionUsers(channelId, alarmMessageId, '✅'),
-                    getReactionUsers(channelId, alarmMessageId, '❌')
-                ]);
-
+                const yesReactors = await getReactionUsers(channelId, alarmMessageId, '✅');
                 if (yesReactors.some(u => u && !u.bot && String(u.id) === cleanTargetUserId)) return 'discord-yes';
+
+                await sleep(250);
+                if (typeof onTickLabel === 'function') {
+                    const earlyExit = onTickLabel(Math.max(1, Math.ceil((deadline - Date.now()) / 1000)));
+                    if (earlyExit) return earlyExit;
+                }
+
+                const noReactors = await getReactionUsers(channelId, alarmMessageId, '❌');
                 if (noReactors.some(u => u && !u.bot && String(u.id) === cleanTargetUserId)) return 'discord-no';
 
-                if (loopCount++ % 3 === 0) {
+                if (loopCount++ % 2 === 0) {
+                    await sleep(200);
                     const messages = await fetchDiscordMessagesAfter(channelId, lastCheckedMsgId);
                     if (Array.isArray(messages) && messages.length > 0) {
                         messages.sort((a, b) => (BigInt(a.id) > BigInt(b.id) ? 1 : -1));
@@ -483,24 +717,225 @@
                     }
                 }
 
-                await sleep(700);
+                await sleep(1100);
             }
 
             return 'discord-timeout';
         }
 
+        async function waitForDiscordOrManualDecision(subject, sectionName, webhookMsgData) {
+            return pollDiscordYesNoDecision(webhookMsgData, DISCORD_DECISION_TIMEOUT_SEC, (remainingSec) => {
+                const curModal = document.querySelector('.swal-overlay--show-modal .swal-icon--info');
+                if (!curModal) return 'answered-on-screen';
+                btn.textContent = `📱 React ✅/❌ on Discord (${remainingSec}s)`;
+                return null;
+            });
+        }
+
         // =====================================================================
-        // SIDECAR PANEL UI (COURSE EXCLUSION DRAWER)
+        // REDIRECT / MULTIPLE BROWSER / SESSION LOSS FAILSAFE (NO LOOP)
+        // =====================================================================
+
+        function isMultipleBrowserHtml(htmlOrDoc, responseUrl = '') {
+            if (responseUrl && /\/Error\/MultipleBrowser\.aspx/i.test(responseUrl)) return true;
+            const text = typeof htmlOrDoc === 'string'
+                ? htmlOrDoc
+                : (htmlOrDoc?.documentElement?.innerHTML || '');
+            if (!text) return false;
+            return (
+                /<div[^>]*class=["']title2["'][^>]*>\s*Multiple Sessions Detected\s*<\/div>/i.test(text) ||
+                /<title>\s*myMapúa:\s*Multiple Browser\s*<\/title>/i.test(text) ||
+                /action=["']\.\/MultipleBrowser\.aspx["']/i.test(text)
+            );
+        }
+
+        function hasManageSectionTabInHtml(htmlString) {
+            try {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(htmlString, 'text/html');
+                const manageSecLi = doc.querySelector('#topNavigation li#managesection a[href*="ManageSection.aspx" i], a[href*="ManageSection.aspx" i]');
+                return Boolean(manageSecLi);
+            } catch (e) {
+                return /id=["']managesection["']/i.test(htmlString) || /href=["'][^"']*ManageSection\.aspx["']/i.test(htmlString);
+            }
+        }
+
+        async function handleSessionLossOrRedirect(reasonLabel = 'Multiple Sessions Detected') {
+            if (isRecoveryPromptActive || isRedirectExhausted) return;
+            isRecoveryPromptActive = true;
+
+            const wasRunning = isRunning;
+            isRunning = false;
+            sessionStorage.setItem('mapua_hunter_is_running', 'false');
+            setBtnColor('#dc3545');
+            btn.textContent = `🚨 Redirect/Loss! Check Discord...`;
+
+            const cleanId = (hunterUserId || '').replace(/[^0-9]/g, '');
+
+            // --- ATTEMPT 1 (First 60s) ---
+            const msgData1 = await sendDiscordAlarm(
+                `🚨 Session Redirected / Lost (${reasonLabel}) — [Attempt 1/2]`,
+                `Your Mapúa session hit **${reasonLabel}** (\`MultipleBrowser.aspx\` / Session Loss)!\n\n` +
+                `👉 **React ✅ within ${DISCORD_DECISION_TIMEOUT_SEC}s** to reconnect via Mapúa Home (\`Default.aspx\`) and jump back to **Manage Section** (if available).\n` +
+                `👉 **React ❌** to stay paused on this page.\n` +
+                `⏳ *If there is no response, I will ask one more time before letting the site redirect.*\n` +
+                `🔒 *Reaction Locked to:* ${cleanId ? `<@${cleanId}>` : '`⚠️ Set Discord User ID in GUI!`'}`,
+                15548997,
+                true
+            );
+
+            let decision = await pollDiscordYesNoDecision(msgData1, DISCORD_DECISION_TIMEOUT_SEC, (remSec) => {
+                btn.textContent = `🚨 Recover? (1/2) ✅/❌ (${remSec}s)`;
+                return null;
+            });
+
+            // --- ATTEMPT 2 (Backup 60s if no response on Attempt 1) ---
+            if (decision === 'discord-timeout') {
+                btn.textContent = `⏳ No response! Sending 2nd prompt...`;
+                const msgData2 = await sendDiscordAlarm(
+                    `⏳ Final Warning: Session Redirect Pending! — [Attempt 2/2]`,
+                    `You didn't respond to the first prompt! Your session is about to be redirected to \`MultipleBrowser.aspx\`.\n\n` +
+                    `👉 **React ✅ within ${DISCORD_DECISION_TIMEOUT_SEC}s** to recover your session and return to **Manage Section**.\n` +
+                    `👉 **React ❌** to stay paused.\n` +
+                    `⚠️ *If there is still no response after ${DISCORD_DECISION_TIMEOUT_SEC}s, the browser will be redirected to MultipleBrowser.aspx and stop asking!*`,
+                    16744192,
+                    true
+                );
+
+                decision = await pollDiscordYesNoDecision(msgData2, DISCORD_DECISION_TIMEOUT_SEC, (remSec) => {
+                    btn.textContent = `🚨 Final Try (2/2) ✅/❌ (${remSec}s)`;
+                    return null;
+                });
+            }
+
+            // --- EVALUATE DECISION ---
+            if (decision === 'discord-yes') {
+                btn.textContent = `🔄 Checking Home Page for Manage Section...`;
+                try {
+                    const homeRes = await fetch(HOME_URL, { credentials: 'include', cache: 'no-store' });
+                    const homeHtml = await homeRes.text();
+
+                    if (isMultipleBrowserHtml(homeHtml, homeRes.url)) {
+                        await fetch('https://my.mapua.edu.ph/', { credentials: 'include', cache: 'no-store' });
+                    }
+
+                    const verifyRes = await fetch(HOME_URL, { credentials: 'include', cache: 'no-store' });
+                    const verifyHtml = await verifyRes.text();
+
+                    if (hasManageSectionTabInHtml(verifyHtml)) {
+                        await sendDiscordAlarm(
+                            `✅ Manage Section Available — Reconnecting!`,
+                            `Found the **Manage Section** tab on \`Default.aspx\`! Reloading enrollment hunter now...`,
+                            5763719,
+                            false
+                        );
+                        setRedirectExhausted(false);
+                        sessionStorage.setItem('mapua_hunter_is_running', wasRunning ? 'true' : 'false');
+                        isRecoveryPromptActive = false;
+                        window.location.href = MANAGE_SECTION_URL;
+                        return;
+                    } else {
+                        await sendDiscordAlarm(
+                            `⚠️ Manage Section Tab Not Available!`,
+                            `Checked \`Student/Default.aspx\`, but the **Manage Section** tab is currently not available in your navigation bar (or your session is logged out). Taking no action.`,
+                            16776960,
+                            true
+                        );
+                        btn.textContent = `⚠️ Manage Section Unavailable`;
+                        setRedirectExhausted(true);
+                        setRunningState(false);
+                        isRecoveryPromptActive = false;
+                        if (!/ManageSection\.aspx/i.test(window.location.pathname)) {
+                            window.location.href = HOME_URL;
+                        }
+                        return;
+                    }
+                } catch (err) {
+                    console.error('[Recovery Failsafe] Error checking Default.aspx:', err);
+                    btn.textContent = `⚠️ Recovery Network Error`;
+                    setRunningState(false);
+                    isRecoveryPromptActive = false;
+                }
+            } else if (decision === 'discord-no') {
+                setRedirectExhausted(true);
+                setRunningState(false);
+                await sendDiscordAlarm(
+                    `⏸️ Session Recovery Declined (❌)`,
+                    `You chose **❌**. Staying paused on the current page without asking again. Click **▶️ Start Hunter** whenever you're ready to resume.`,
+                    10197915,
+                    false
+                );
+                btn.textContent = `⏸️ Redirect Paused (Click to Resume)`;
+                setBtnColor('#6c757d');
+                isRecoveryPromptActive = false;
+            } else {
+                setRedirectExhausted(true);
+                setRunningState(false);
+                btn.textContent = `🛑 Redirected (No Response)`;
+                setBtnColor('#6c757d');
+
+                await sendDiscordAlarm(
+                    `🛑 No Response After 2 Attempts — Redirected to MultipleBrowser`,
+                    `No response was received after **2 confirmation attempts**. The hunter has stopped asking and redirected your browser to \`MultipleBrowser.aspx\`.`,
+                    15548997,
+                    true
+                );
+
+                isRecoveryPromptActive = false;
+                if (!/MultipleBrowser\.aspx/i.test(window.location.pathname)) {
+                    window.location.href = MULTI_BROWSER_URL;
+                }
+            }
+        }
+
+        async function triggerSafeReload(reason) {
+            if (isRecoveryPromptActive || isRedirectExhausted) return;
+            console.warn(`[Hunter Failsafe] Pre-checking session before reload (${reason})...`);
+            try {
+                const probe = await fetch(window.location.pathname + window.location.search, {
+                    credentials: 'include',
+                    cache: 'no-store'
+                });
+                const probeHtml = await probe.text();
+
+                if (isMultipleBrowserHtml(probeHtml, probe.url)) {
+                    console.warn('[Hunter Failsafe] 🚨 Detected MultipleBrowser redirect during pre-reload probe!');
+                    await handleSessionLossOrRedirect('Multiple Sessions Detected');
+                    return;
+                }
+                if (/\/Student\/Default\.aspx/i.test(probe.url) && !/ManageSection\.aspx/i.test(probe.url)) {
+                    console.warn('[Hunter Failsafe] 🚨 Redirected to Default.aspx during pre-reload probe!');
+                    await handleSessionLossOrRedirect('Redirected to Home Page');
+                    return;
+                }
+            } catch (e) {
+                console.warn('[Hunter Failsafe] Probe network error, proceeding with normal reload:', e);
+            }
+            window.location.href = window.location.pathname + window.location.search;
+        }
+
+        if (unsafeWindow.$ && unsafeWindow.$(document) && typeof unsafeWindow.$(document).ajaxComplete === 'function') {
+            unsafeWindow.$(document).ajaxComplete((event, xhr) => {
+                if (!xhr || isRecoveryPromptActive || isRedirectExhausted) return;
+                const respText = xhr.responseText || '';
+                if (isMultipleBrowserHtml(respText)) {
+                    handleSessionLossOrRedirect('Multiple Sessions Detected');
+                }
+            });
+        }
+
+        // =====================================================================
+        // SIDECAR PANEL UI (COURSE EXCLUSION + PER-COURSE DAY FILTER/PRIORITY)
         // =====================================================================
 
         const sidecar = document.createElement('div');
         sidecar.id = 'mapua-hunter-sidecar-panel';
-        sidecar.setAttribute('data-version', '14.5.4');
+        sidecar.setAttribute('data-version', '14.6.5');
         sidecar.style.cssText = `
             position: fixed !important; bottom: 20px !important; right: 315px !important;
             z-index: 2147483647 !important; background-color: #1e1e24 !important;
             color: #ffffff !important; border: 2px solid #dc3545 !important;
-            border-radius: 10px !important; padding: 12px !important; width: 230px !important;
+            border-radius: 10px !important; padding: 12px !important; width: 265px !important;
             font-family: sans-serif !important; font-size: 12px !important;
             box-shadow: 0 6px 16px rgba(0,0,0,0.55) !important;
             display: ${isSidecarOpen && !isMinimized ? 'flex' : 'none'} !important;
@@ -514,7 +949,7 @@
         `;
 
         const sidecarTitle = document.createElement('div');
-        sidecarTitle.textContent = '🚫 Ignore Subjects';
+        sidecarTitle.textContent = '🚫 Ignore & 📅 Day Filters';
         sidecarTitle.style.cssText = `font-weight: bold !important; font-size: 12px !important; color: #ff6b6b !important;`;
 
         const sidecarCloseBtn = document.createElement('button');
@@ -536,13 +971,13 @@
         sidecarHeader.appendChild(sidecarCloseBtn);
 
         const sidecarSubtext = document.createElement('div');
-        sidecarSubtext.textContent = 'Checked courses will be skipped completely during hunting:';
-        sidecarSubtext.style.cssText = `font-size: 11px !important; color: #aaa !important; line-height: 1.3 !important;`;
+        sidecarSubtext.innerHTML = `Check box to skip course.<br>Click days: <span style="color:#ff6b6b;font-weight:bold;">1x = Avoid (Red)</span> • <span style="color:#00e676;font-weight:bold;">2x = Priority (Green)</span>`;
+        sidecarSubtext.style.cssText = `font-size: 10.5px !important; color: #ccc !important; line-height: 1.35 !important;`;
 
         const courseListContainer = document.createElement('div');
         courseListContainer.style.cssText = `
-            display: flex !important; flex-direction: column !important; gap: 5px !important;
-            max-height: 210px !important; overflow-y: auto !important;
+            display: flex !important; flex-direction: column !important; gap: 6px !important;
+            max-height: 260px !important; overflow-y: auto !important;
             background-color: #2b2b36 !important; padding: 8px !important;
             border-radius: 6px !important; border: 1px solid #444 !important;
         `;
@@ -565,7 +1000,7 @@
 
         const clearExcludedBtn = document.createElement('button');
         clearExcludedBtn.type = 'button';
-        clearExcludedBtn.textContent = '🧹 Clear All';
+        clearExcludedBtn.textContent = '🧹 Reset All';
         clearExcludedBtn.style.cssText = `
             flex: 1 !important; padding: 5px 6px !important; background-color: #495057 !important;
             color: white !important; border: none !important; border-radius: 4px !important;
@@ -574,7 +1009,9 @@
         clearExcludedBtn.addEventListener('click', (e) => {
             e.preventDefault(); e.stopPropagation();
             excludedCourses = [];
+            courseDayPrefs = {};
             saveExcludedCourses();
+            saveCourseDayPrefs();
             populateSidecarCourses();
         });
 
@@ -600,6 +1037,15 @@
                 courseMap.set(norm, { displayCode: rawSubj || norm, sectionText: secText });
             });
 
+            const rightTables = Array.from(document.querySelectorAll('.class_course_schedule:not(.hidden) table.course_table_schedule'));
+            rightTables.forEach(table => {
+                const spanCode = (table.querySelector('span.course')?.textContent || table.getAttribute('data-section') || '').trim();
+                const norm = normalizeCode(spanCode);
+                if (norm && !courseMap.has(norm)) {
+                    courseMap.set(norm, { displayCode: spanCode, sectionText: 'Equiv' });
+                }
+            });
+
             excludedCourses.forEach(norm => {
                 if (!courseMap.has(norm)) {
                     courseMap.set(norm, { displayCode: norm, sectionText: 'Saved' });
@@ -616,14 +1062,20 @@
 
             courseMap.forEach((info, normCode) => {
                 const isChecked = excludedCourses.includes(normCode);
+                const pref = getCourseDayPref(normCode);
 
-                const itemLabel = document.createElement('label');
-                itemLabel.style.cssText = `
-                    display: flex !important; align-items: center !important; justify-content: space-between !important;
-                    padding: 5px 7px !important; border-radius: 4px !important; cursor: pointer !important;
-                    background-color: ${isChecked ? 'rgba(220, 53, 69, 0.25)' : '#1e1e24'} !important;
+                const card = document.createElement('div');
+                card.style.cssText = `
+                    display: flex !important; flex-direction: column !important; gap: 5px !important;
+                    padding: 6px 7px !important; border-radius: 5px !important;
+                    background-color: ${isChecked ? 'rgba(220, 53, 69, 0.22)' : '#1e1e24'} !important;
                     border: 1px solid ${isChecked ? '#dc3545' : '#3a3a44'} !important;
-                    user-select: none !important;
+                `;
+
+                const topRow = document.createElement('label');
+                topRow.style.cssText = `
+                    display: flex !important; align-items: center !important; justify-content: space-between !important;
+                    cursor: pointer !important; user-select: none !important; margin: 0 !important;
                 `;
 
                 const leftGroup = document.createElement('div');
@@ -653,8 +1105,8 @@
                     background-color: ${hasNoSec ? '#495057' : '#198754'} !important; color: #fff !important;
                 `;
 
-                itemLabel.appendChild(leftGroup);
-                itemLabel.appendChild(secBadge);
+                topRow.appendChild(leftGroup);
+                topRow.appendChild(secBadge);
 
                 checkbox.addEventListener('change', (e) => {
                     e.stopPropagation();
@@ -666,9 +1118,57 @@
                     saveExcludedCourses();
                     populateSidecarCourses();
                 });
+                topRow.addEventListener('click', (e) => e.stopPropagation());
 
-                itemLabel.addEventListener('click', (e) => e.stopPropagation());
-                courseListContainer.appendChild(itemLabel);
+                const daysRow = document.createElement('div');
+                daysRow.style.cssText = `
+                    display: flex !important; align-items: center !important; justify-content: space-between !important;
+                    gap: 3px !important; padding-top: 2px !important;
+                `;
+
+                DAYS_ORDER.forEach(dayCode => {
+                    const isAvoid = pref.avoid.includes(dayCode);
+                    const isWant = pref.want.includes(dayCode);
+
+                    const dayBtn = document.createElement('button');
+                    dayBtn.type = 'button';
+                    dayBtn.textContent = dayCode;
+                    dayBtn.title = isAvoid
+                        ? `${dayCode}: AVOIDING (Click to switch to Priority Want)`
+                        : (isWant ? `${dayCode}: PRIORITY WANT (Click to reset)` : `${dayCode}: Neutral (Click to Avoid)`);
+
+                    let bg = '#2b2b36';
+                    let border = '#555';
+                    let textCol = '#aaa';
+                    if (isAvoid) {
+                        bg = '#c92a2a';
+                        border = '#ff6b6b';
+                        textCol = '#fff';
+                    } else if (isWant) {
+                        bg = '#198754';
+                        border = '#00e676';
+                        textCol = '#fff';
+                    }
+
+                    dayBtn.style.cssText = `
+                        flex: 1 !important; padding: 2px 0 !important; font-size: 10px !important;
+                        font-weight: bold !important; border-radius: 3px !important; cursor: pointer !important;
+                        background-color: ${bg} !important; color: ${textCol} !important;
+                        border: 1px solid ${border} !important; text-align: center !important;
+                    `;
+
+                    dayBtn.addEventListener('click', (e) => {
+                        e.preventDefault(); e.stopPropagation();
+                        toggleCourseDayState(normCode, dayCode);
+                        populateSidecarCourses();
+                    });
+
+                    daysRow.appendChild(dayBtn);
+                });
+
+                card.appendChild(topRow);
+                card.appendChild(daysRow);
+                courseListContainer.appendChild(card);
             });
         }
 
@@ -678,7 +1178,7 @@
 
         const panel = document.createElement('div');
         panel.id = 'mapua-section-hunter-panel';
-        panel.setAttribute('data-version', '14.5.4');
+        panel.setAttribute('data-version', '14.6.5');
         panel.style.cssText = `
             position: fixed !important; bottom: 20px !important; right: 20px !important;
             z-index: 2147483647 !important; background-color: #1e1e24 !important;
@@ -717,9 +1217,11 @@
         const btn = document.createElement('button');
         btn.id = 'mapua-section-hunter-btn';
         btn.type = 'button';
-        btn.textContent = isRunning ? '⏳ Resuming Hunter...' : '▶️ Start Hunter';
+        btn.textContent = isRedirectExhausted
+            ? '🛑 Redirected (Click to Resume)'
+            : (isRunning ? '⏳ Resuming Hunter...' : '▶️ Start Hunter');
         btn.style.cssText = `
-            padding: 10px 14px !important; background-color: ${isRunning ? '#c8102e' : '#28a745'} !important;
+            padding: 10px 14px !important; background-color: ${isRedirectExhausted ? '#6c757d' : (isRunning ? '#c8102e' : '#28a745')} !important;
             color: white !important; border: none !important; border-radius: 6px !important;
             cursor: pointer !important; font-weight: bold !important; font-size: 13px !important; width: 100% !important;
         `;
@@ -738,13 +1240,14 @@
         `;
 
         function updateExcludeBtnUI() {
-            const count = excludedCourses.length;
+            const exCount = excludedCourses.length;
+            const dayFilterCount = Object.values(courseDayPrefs).filter(p => (p.avoid && p.avoid.length > 0) || (p.want && p.want.length > 0)).length;
             const arrow = isSidecarOpen ? '◀' : '▶';
-            if (count > 0) {
-                excludeDrawerBtn.textContent = `🚫 Excluded Courses: ${count} Active ${arrow}`;
+            if (exCount > 0 || dayFilterCount > 0) {
+                excludeDrawerBtn.textContent = `🚫 Excl (${exCount}) • 📅 Days (${dayFilterCount}) ${arrow}`;
                 excludeDrawerBtn.style.setProperty('background-color', '#c92a2a', 'important');
             } else {
-                excludeDrawerBtn.textContent = `🚫 Exclude Courses (None) ${arrow}`;
+                excludeDrawerBtn.textContent = `🚫 Ignore & 📅 Day Filters ${arrow}`;
                 excludeDrawerBtn.style.setProperty('background-color', '#343a40', 'important');
             }
         }
@@ -862,111 +1365,15 @@
         confirmToggleBtn.type = 'button';
         confirmToggleBtn.style.cssText = `padding: 7px 10px !important; color: white !important; border: 1px solid #666 !important; border-radius: 6px !important; cursor: pointer !important; font-weight: 600 !important; font-size: 12px !important; width: 100% !important;`;
 
-        // =====================================================================
-        // DECLINED SECTION SETTINGS SUB-PANEL (ONLY ACTIVE WHEN AUTO-ACCEPT OFF)
-        // =====================================================================
-
-        const declinedConfigBox = document.createElement('div');
-        declinedConfigBox.style.cssText = `
-            display: ${autoConfirmYes ? 'none' : 'flex'} !important;
-            flex-direction: column !important; gap: 6px !important;
-            padding: 8px !important; border-radius: 6px !important;
-            background-color: #252530 !important; border: 1px dashed #ff9f43 !important;
-        `;
-
-        const declineModeBtn = document.createElement('button');
-        declineModeBtn.type = 'button';
-        declineModeBtn.style.cssText = `padding: 6px 8px !important; color: white !important; border: 1px solid #ff9f43 !important; border-radius: 5px !important; cursor: pointer !important; font-weight: bold !important; font-size: 11px !important; width: 100% !important;`;
-
-        const recheckRow = document.createElement('div');
-        recheckRow.style.cssText = `display: flex !important; align-items: center !important; justify-content: space-between !important; gap: 6px !important;`;
-        const recheckLabel = document.createElement('label');
-        recheckLabel.textContent = '🔁 Re-ask after (cycles):';
-        recheckLabel.style.cssText = `font-size: 11px !important; color: #ff9f43 !important; font-weight: bold !important;`;
-        const recheckInput = document.createElement('input');
-        recheckInput.type = 'text';
-        recheckInput.value = String(recheckCycles);
-        recheckInput.style.cssText = `width: 75px !important; padding: 3px 6px !important; border-radius: 4px !important; border: 1px solid #ff9f43 !important; background-color: #1e1e24 !important; color: #fff !important; font-size: 12px !important; font-weight: bold !important; text-align: right !important;`;
-
-        function updateDeclineModeUI() {
-            if (declineMode === 'forever') {
-                declineModeBtn.textContent = '🚫 When ❌ Declined: Ignore Until Cleared';
-                declineModeBtn.style.setProperty('background-color', '#c92a2a', 'important');
-                recheckRow.style.setProperty('display', 'none', 'important');
-            } else {
-                declineModeBtn.textContent = `🔁 When ❌ Declined: Cycle (${recheckCycles}x)`;
-                declineModeBtn.style.setProperty('background-color', '#d9480f', 'important');
-                recheckRow.style.setProperty('display', 'flex', 'important');
-            }
-        }
-
-        function commitRecheckValue() {
-            let val = parseInt(recheckInput.value.replace(/[^0-9]/g, ''), 10);
-            if (isNaN(val) || val < 1) val = 1;
-            recheckCycles = val;
-            recheckInput.value = String(val);
-            localStorage.setItem('mapua_hunter_recheck_cycles', String(val));
-            updateDeclineModeUI();
-        }
-        makeInputTypeable(recheckInput, commitRecheckValue);
-        recheckInput.addEventListener('input', () => {
-            const val = parseInt(recheckInput.value.replace(/[^0-9]/g, ''), 10);
-            if (!isNaN(val) && val >= 1) {
-                recheckCycles = val;
-                localStorage.setItem('mapua_hunter_recheck_cycles', String(val));
-                updateDeclineModeUI();
-            }
-        });
-        recheckInput.addEventListener('blur', commitRecheckValue);
-        recheckRow.appendChild(recheckLabel);
-        recheckRow.appendChild(recheckInput);
-
-        declineModeBtn.addEventListener('click', (e) => {
-            e.preventDefault(); e.stopPropagation();
-            declineMode = (declineMode === 'cycle') ? 'forever' : 'cycle';
-            localStorage.setItem('mapua_hunter_decline_mode', declineMode);
-            updateDeclineModeUI();
-        });
-
-        const declinedBtn = document.createElement('button');
-        declinedBtn.type = 'button';
-        declinedBtn.style.cssText = `padding: 6px 8px !important; color: white !important; border: 1px solid #666 !important; border-radius: 5px !important; cursor: pointer !important; font-weight: 600 !important; font-size: 11px !important; width: 100% !important;`;
-        function updateDeclinedBtnUI() {
-            const keys = Object.keys(declinedSections);
-            const n = keys.length;
-            if (n > 0) {
-                const preview = keys.slice(0, 2).map(k => declinedSections[k]?.section || k).join(', ');
-                declinedBtn.textContent = `🗑️ Ignored Sections: ${n} (${preview}${n > 2 ? '...' : ''}) — Clear`;
-                declinedBtn.style.setProperty('background-color', '#c92a2a', 'important');
-            } else {
-                declinedBtn.textContent = '🗑️ Ignored Sections: None';
-                declinedBtn.style.setProperty('background-color', '#343a40', 'important');
-            }
-        }
-        updateDeclinedBtnUI();
-        updateDeclineModeUI();
-
-        declinedBtn.addEventListener('click', (e) => {
-            e.preventDefault(); e.stopPropagation();
-            declinedSections = {};
-            saveDeclined();
-        });
-
-        declinedConfigBox.appendChild(declineModeBtn);
-        declinedConfigBox.appendChild(recheckRow);
-        declinedConfigBox.appendChild(declinedBtn);
-
         function updateConfirmToggleUI() {
             if (autoConfirmYes) {
                 confirmToggleBtn.textContent = '🤖 Auto-Accept (Press Yes): ON';
                 confirmToggleBtn.style.setProperty('background-color', '#d39e00', 'important');
                 confirmToggleBtn.style.setProperty('color', '#000000', 'important');
-                declinedConfigBox.style.setProperty('display', 'none', 'important');
             } else {
                 confirmToggleBtn.textContent = '📱 Auto-Accept: OFF (Discord ✅/❌)';
                 confirmToggleBtn.style.setProperty('background-color', '#495057', 'important');
                 confirmToggleBtn.style.setProperty('color', '#ffffff', 'important');
-                declinedConfigBox.style.setProperty('display', 'flex', 'important');
             }
         }
         updateConfirmToggleUI();
@@ -976,6 +1383,80 @@
             localStorage.setItem('mapua_hunter_auto_confirm', autoConfirmYes);
             updateConfirmToggleUI();
         });
+
+        // =====================================================================
+        // SMART CONFLICT MEMORY BOX (DISPLAYS "COURSE: SECTION")
+        // =====================================================================
+
+        const conflictConfigBox = document.createElement('div');
+        conflictConfigBox.style.cssText = `
+            display: flex !important; flex-direction: column !important; gap: 6px !important;
+            padding: 8px !important; border-radius: 6px !important;
+            background-color: #252530 !important; border: 1px dashed #ff9f43 !important;
+        `;
+
+        const strikeRow = document.createElement('div');
+        strikeRow.style.cssText = `display: flex !important; align-items: center !important; justify-content: space-between !important; gap: 6px !important;`;
+        const strikeLabel = document.createElement('label');
+        strikeLabel.textContent = '⚡ Ignore after conflicts:';
+        strikeLabel.style.cssText = `font-size: 11px !important; color: #ff9f43 !important; font-weight: bold !important;`;
+        const strikeInput = document.createElement('input');
+        strikeInput.type = 'text';
+        strikeInput.value = String(conflictStrikeLimit);
+        strikeInput.style.cssText = `width: 65px !important; padding: 3px 6px !important; border-radius: 4px !important; border: 1px solid #ff9f43 !important; background-color: #1e1e24 !important; color: #fff !important; font-size: 12px !important; font-weight: bold !important; text-align: right !important;`;
+
+        function commitStrikeLimit() {
+            let val = parseInt(strikeInput.value.replace(/[^0-9]/g, ''), 10);
+            if (isNaN(val) || val < 1) val = 5;
+            conflictStrikeLimit = val;
+            strikeInput.value = String(val);
+            localStorage.setItem('mapua_hunter_conflict_limit', String(val));
+            updateIgnoredBtnUI();
+        }
+        makeInputTypeable(strikeInput, commitStrikeLimit);
+        strikeInput.addEventListener('input', () => {
+            const val = parseInt(strikeInput.value.replace(/[^0-9]/g, ''), 10);
+            if (!isNaN(val) && val >= 1) {
+                conflictStrikeLimit = val;
+                localStorage.setItem('mapua_hunter_conflict_limit', String(val));
+                updateIgnoredBtnUI();
+            }
+        });
+        strikeInput.addEventListener('blur', commitStrikeLimit);
+        strikeRow.appendChild(strikeLabel);
+        strikeRow.appendChild(strikeInput);
+
+        const ignoredBtn = document.createElement('button');
+        ignoredBtn.type = 'button';
+        ignoredBtn.style.cssText = `padding: 6px 8px !important; color: white !important; border: 1px solid #666 !important; border-radius: 5px !important; cursor: pointer !important; font-weight: 600 !important; font-size: 11px !important; width: 100% !important;`;
+
+        function updateIgnoredBtnUI() {
+            const allEntries = Object.values(conflictMemory);
+            const ignoredEntries = allEntries.filter(e => e.ignored || e.strikes >= conflictStrikeLimit);
+            const trackingEntries = allEntries.filter(e => !e.ignored && e.strikes < conflictStrikeLimit);
+
+            if (ignoredEntries.length > 0 || trackingEntries.length > 0) {
+                const preview = ignoredEntries.slice(0, 2).map(e => `${e.subject}: ${e.section}`).join(', ');
+                const fullListTitle = allEntries.map(e => `${e.subject}: ${e.section} (${e.strikes}/${conflictStrikeLimit})`).join('\n');
+                ignoredBtn.title = fullListTitle;
+                const previewStr = preview ? ` (${preview}${ignoredEntries.length > 2 ? '...' : ''})` : '';
+                ignoredBtn.textContent = `🗑️ Ignored: ${ignoredEntries.length}${previewStr} | Strikes: ${trackingEntries.length}`;
+                ignoredBtn.style.setProperty('background-color', ignoredEntries.length > 0 ? '#c92a2a' : '#d9480f', 'important');
+            } else {
+                ignoredBtn.title = 'Click to clear all conflict strikes and ignored sections';
+                ignoredBtn.textContent = '🗑️ Ignored Conflict Sections: 0';
+                ignoredBtn.style.setProperty('background-color', '#343a40', 'important');
+            }
+        }
+        updateIgnoredBtnUI();
+
+        ignoredBtn.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            clearAllConflictMemory();
+        });
+
+        conflictConfigBox.appendChild(strikeRow);
+        conflictConfigBox.appendChild(ignoredBtn);
 
         const refreshToggleBtn = document.createElement('button');
         refreshToggleBtn.type = 'button';
@@ -1127,7 +1608,7 @@
             const cleanId = (hunterUserId || '').replace(/[^0-9]/g, '');
 
             const msgData = await sendDiscordAlarm(
-                `🧪 v14.5.4 Reaction Test Alarm!`,
+                `🧪 v14.6.5 Reaction Test Alarm!`,
                 `Your Discord ID (${cleanId ? `<@${cleanId}>` : '`⚠️ NOT SET - Enter your 18-digit Discord ID in GUI!`'}) is linked!\n\n` +
                 `👉 **Watch below:** The Bot will now add **✅** and **❌** reactions to this message!`,
                 5793266,
@@ -1137,7 +1618,7 @@
             if (msgData && msgData.channel_id && msgData.id) {
                 const seed = await seedYesNoReactionsOnMessage(msgData.channel_id, msgData.id);
                 if (!seed.checkOk) {
-                    alert(`Relay reaction test failed (HTTP ${seed.status}).\n\n401 = wrong RELAY_KEY\n403 = bot can't see the channel / channel not allowed\n0 = Worker URL unreachable\n\nDetails: ${(seed.error || '').slice(0, 200)}`);
+                    alert(`Relay reaction test failed (HTTP ${seed.status}).\n\nDetails: ${(seed.error || '').slice(0, 200)}`);
                 }
             }
 
@@ -1158,7 +1639,7 @@
         settingsContainer.appendChild(timePrefBtn);
         settingsContainer.appendChild(strictMatchBtn);
         settingsContainer.appendChild(confirmToggleBtn);
-        settingsContainer.appendChild(declinedConfigBox);
+        settingsContainer.appendChild(conflictConfigBox);
         settingsContainer.appendChild(refreshToggleBtn);
         settingsContainer.appendChild(speedRow);
         settingsContainer.appendChild(refreshRow);
@@ -1189,8 +1670,28 @@
         ensurePanelMounted();
         setInterval(ensurePanelMounted, 500);
 
+        if (/MultipleBrowser\.aspx/i.test(window.location.pathname) || isMultipleBrowserHtml(document)) {
+            if (isRunning && !isRedirectExhausted) {
+                handleSessionLossOrRedirect('Multiple Sessions Page');
+            } else {
+                btn.textContent = '🛑 Redirected (Click to Resume)';
+                setBtnColor('#6c757d');
+            }
+            return;
+        }
+        if (/Default\.aspx/i.test(window.location.pathname)) {
+            if (isRunning && !isRedirectExhausted) {
+                if (hasManageSectionTabInHtml(document.documentElement.innerHTML)) {
+                    window.location.href = MANAGE_SECTION_URL;
+                } else {
+                    handleSessionLossOrRedirect('On Home Page (Manage Section Unavailable)');
+                }
+            }
+            return;
+        }
+
         // =====================================================================
-        // CORE HUNTING LOGIC (WITH ✅ / ❌ REACTION REMOTE CONTROL)
+        // CORE HUNTING LOGIC
         // =====================================================================
 
         const beep = new Audio('https://www.soundjay.com/buttons/sounds/button-09.mp3');
@@ -1201,7 +1702,7 @@
                    a === refreshInput ||
                    a === nameInput ||
                    a === webhookInput ||
-                   a === recheckInput;
+                   a === strikeInput;
         }
 
         async function waitWhileUserTyping() {
@@ -1221,7 +1722,7 @@
         setInterval(() => {
             const infoModalOpen = !!document.querySelector('.swal-overlay--show-modal .swal-icon--info');
             const userTyping = isUserTypingInPanel();
-            if (!isRunning || infoModalOpen || userTyping) {
+            if (!isRunning || infoModalOpen || userTyping || isRecoveryPromptActive || isRedirectExhausted) {
                 loadingStuckSince = null;
                 updateRefreshToggleUI();
                 return;
@@ -1238,7 +1739,10 @@
             if (autoRefreshEnabled) {
                 remainingRefreshSec--;
                 updateRefreshToggleUI();
-                if (remainingRefreshSec <= 0) triggerSafeReload(`Scheduled ${refreshIntervalSec}s auto-refresh`);
+                if (remainingRefreshSec <= 0) {
+                    remainingRefreshSec = refreshIntervalSec;
+                    triggerSafeReload(`Scheduled ${refreshIntervalSec}s auto-refresh`);
+                }
             }
         }, 1000);
 
@@ -1395,6 +1899,8 @@
             const allRows = Array.from(document.querySelectorAll('#current_load_student tr[data-subject]'));
             if (allRows.length === 0) return null;
 
+            checkScheduleLoadChanges();
+
             const nonExcludedRows = allRows.filter(row => {
                 const rawSubj = (row.getAttribute('data-subject') || row.querySelector('td')?.textContent || '').trim();
                 return !excludedCourses.includes(normalizeCode(rawSubj));
@@ -1434,8 +1940,28 @@
                     }
                 }
             }
-            if (timePref === 'any') return candidateButtons;
-            return candidateButtons.filter(b => doesRowMatchTimePreference(b.closest('tr')));
+
+            candidateButtons = candidateButtons.filter(b => {
+                const actCourse = resolveActualSectionCourse(b, subject);
+                return !excludedCourses.includes(normalizeCode(actCourse));
+            });
+
+            if (timePref !== 'any') {
+                candidateButtons = candidateButtons.filter(b => doesRowMatchTimePreference(b.closest('tr')));
+            }
+
+            const scoredButtons = [];
+            for (const b of candidateButtons) {
+                const actCourse = resolveActualSectionCourse(b, subject);
+                const secName = (b.getAttribute('data-section') || '').trim();
+                const evalRes = evaluateRowDayPreference(subject, actCourse, secName, b.closest('tr'));
+                if (evalRes.allowed) {
+                    scoredButtons.push({ btn: b, score: evalRes.score });
+                }
+            }
+
+            scoredButtons.sort((a, b) => b.score - a.score);
+            return scoredButtons.map(item => item.btn);
         }
 
         async function startHunting() {
@@ -1447,12 +1973,13 @@
                 }
                 let emptyTableRetries = 0;
                 while (isRunning) {
+                    if (isRecoveryPromptActive || isRedirectExhausted) { await sleep(500); continue; }
                     await waitWhileUserTyping();
                     let courseRows = getTargetCourseRows();
                     if (courseRows === null) {
                         emptyTableRetries++;
                         btn.textContent = `⏳ Waiting for table... (${emptyTableRetries})`;
-                        if (emptyTableRetries > 20) { triggerSafeReload('Course table failed to load'); return; }
+                        if (emptyTableRetries > 20) { await triggerSafeReload('Course table failed to load'); return; }
                         await sleep(500);
                         continue;
                     }
@@ -1473,7 +2000,7 @@
                     }
 
                     for (let i = 0; i < courseRows.length; i++) {
-                        if (!isRunning) break;
+                        if (!isRunning || isRecoveryPromptActive || isRedirectExhausted) break;
                         await waitWhileUserTyping();
                         let courseRow = courseRows[i];
                         let subject = (courseRow.getAttribute('data-subject') || courseRow.querySelector('td')?.textContent || '').trim();
@@ -1488,32 +2015,39 @@
                         courseRow.click();
                         await waitForLoading();
                         await sleep(Math.min(300, scanDelayMs));
-                        if (!isRunning) break;
+                        if (!isRunning || isRecoveryPromptActive || isRedirectExhausted) break;
+
+                        if (isSidecarOpen && !isMinimized) populateSidecarCourses();
 
                         let sectionButtons = getSectionButtonsForCourse(subject);
                         if (sectionButtons.length === 0) { await sleep(scanDelayMs); continue; }
 
                         let enrolledThisCourse = false;
                         for (let j = 0; j < sectionButtons.length; j++) {
-                            if (!isRunning) break;
+                            if (!isRunning || isRecoveryPromptActive || isRedirectExhausted) break;
                             await waitWhileUserTyping();
                             if (excludedCourses.includes(normalizeCode(subject))) break;
 
                             let sBtn = sectionButtons[j];
-                            let sectionName = sBtn.getAttribute('data-section');
-                            let btnSubject = sBtn.getAttribute('data-subject');
+                            let sectionName = (sBtn.getAttribute('data-section') || '').trim();
+                            let actualCourse = resolveActualSectionCourse(sBtn, subject);
+                            let courseLabel = formatCourseDisplay(actualCourse, subject);
 
-                            if (!autoConfirmYes && isSectionDeclined(subject, sectionName)) continue;
+                            if (isSectionIgnored(actualCourse, sectionName)) continue;
 
                             if (!sBtn.isConnected) {
                                 sBtn = getSectionButtonsForCourse(subject).find(b =>
-                                    b.getAttribute('data-section') === sectionName &&
-                                    normalizeCode(b.getAttribute('data-subject')) === normalizeCode(btnSubject || subject)
+                                    (b.getAttribute('data-section') || '').trim() === sectionName &&
+                                    normalizeCode(resolveActualSectionCourse(b, subject)) === normalizeCode(actualCourse)
                                 );
                                 if (!sBtn) continue;
                             }
                             let parentRow = sBtn.closest('tr');
                             if (parentRow && parentRow.classList.contains('load') && parentRow.classList.contains('hidden')) continue;
+
+                            const liveDayCheck = evaluateRowDayPreference(subject, actualCourse, sectionName, parentRow);
+                            if (!liveDayCheck.allowed) continue;
+
                             const scheduleDetails = parentRow ? (parentRow.textContent || '').replace(/\s+/g, ' ').trim() : '';
 
                             if (parentRow) parentRow.click();
@@ -1521,10 +2055,14 @@
                             sBtn.click();
                             await waitForLoading();
 
-                            let result = await handleModal(subject, sectionName);
-                            if (result === 'conflict' || result === 'timeout') continue;
-                            else if (result === 'stuck') {
-                                if (autoRefreshEnabled) { triggerSafeReload('Modal stuck failsafe'); return; }
+                            let result = await handleModal(actualCourse, sectionName);
+                            if (result === 'conflict') {
+                                recordConflictStrike(actualCourse, sectionName);
+                                continue;
+                            } else if (result === 'timeout') {
+                                continue;
+                            } else if (result === 'stuck') {
+                                if (autoRefreshEnabled) { await triggerSafeReload('Modal stuck failsafe'); return; }
                                 btn.textContent = '⚠️ Modal stuck - see F12';
                                 setBtnColor('#ffc107');
                                 setRunningState(false);
@@ -1535,16 +2073,19 @@
                                 const cleanId = (hunterUserId || '').replace(/[^0-9]/g, '');
 
                                 const webhookMsgData = await sendDiscordAlarm(
-                                    `⚠️ Section Found: ${subject} — ${sectionName}`,
-                                    `A conflict-free section (**${sectionName}**) for **${subject}** is waiting on your screen!\n` +
+                                    `⚠️ Section Found: ${actualCourse}: ${sectionName}`,
+                                    `A conflict-free section (**${actualCourse}: ${sectionName}**) ` +
+                                    (normalizeCode(actualCourse) !== normalizeCode(subject) ? `*(for **${subject}**)* ` : ``) +
+                                    `is waiting on your screen!\n` +
+                                    (liveDayCheck.days.length > 0 ? `🗓️ **Days:** \`${liveDayCheck.days.join('/')}\`\n` : ``) +
                                     (scheduleDetails ? `📅 **Details:** \`${scheduleDetails.slice(0, 140)}\`\n\n` : `\n`) +
-                                    `👉 **Tap ✅ to ACCEPT or ❌ to SKIP below within ${DISCORD_DECISION_TIMEOUT_SEC}s!**\n` +
+                                    `👉 **Tap ✅ to ACCEPT or ❌ to IGNORE below within ${DISCORD_DECISION_TIMEOUT_SEC}s!**\n` +
                                     `🔒 *Reaction Locked to:* ${cleanId ? `<@${cleanId}>` : '`⚠️ Set Discord User ID in GUI!`'}`,
                                     16776960,
                                     true
                                 );
 
-                                const decision = await waitForDiscordOrManualDecision(subject, sectionName, webhookMsgData);
+                                const decision = await waitForDiscordOrManualDecision(actualCourse, sectionName, webhookMsgData);
 
                                 if (decision === 'discord-yes') {
                                     const confirmedHow = await confirmYesModal();
@@ -1557,35 +2098,34 @@
                                             await waitForLoading(4000);
                                         }
                                         enrolledThisCourse = true;
+                                        checkScheduleLoadChanges();
                                         await sendDiscordAlarm(
-                                            `✅ Remote ✅ Accepted: ${subject} — ${sectionName}!`,
-                                            `Successfully enrolled in **${sectionName}** for **${subject}** via your Discord reaction!`,
+                                            `✅ Remote ✅ Accepted: ${actualCourse}: ${sectionName}!`,
+                                            `Successfully enrolled in **${actualCourse}: ${sectionName}** (${courseLabel}) via your Discord reaction!`,
                                             5763719,
                                             true
                                         );
                                         if (isSidecarOpen) populateSidecarCourses();
                                         if (!onlyMissingSections) {
-                                            btn.textContent = `✅ Assigned ${sectionName} (${subject})!`;
+                                            btn.textContent = `✅ Assigned ${actualCourse}: ${sectionName}!`;
                                             setBtnColor('#17a2b8');
                                             setRunningState(false);
                                             updateRefreshToggleUI();
                                             return;
                                         }
-                                        btn.textContent = `✅ Got ${subject} (${sectionName})! Next...`;
+                                        btn.textContent = `✅ Got ${actualCourse}: ${sectionName}! Next...`;
                                         setBtnColor('#c8102e');
                                         remainingRefreshSec = refreshIntervalSec;
                                         await sleep(Math.min(800, scanDelayMs));
                                         break;
                                     }
                                 } else if (decision === 'discord-no') {
-                                    markDeclined(subject, sectionName);
+                                    markSectionSkippedImmediately(actualCourse, sectionName, 'discord-skip');
                                     await dismissModal();
                                     await waitForLoading(3000);
                                     await sendDiscordAlarm(
-                                        `⏭️ Remote ❌ Skipped: ${subject} — ${sectionName}`,
-                                        declineMode === 'forever'
-                                            ? `Closed the prompt for **${sectionName}** (**${subject}**). Ignored completely until you click **🗑️ Ignored Sections — Clear** in the panel.`
-                                            : `Closed the prompt for **${sectionName}** (**${subject}**). Will re-ask after **${recheckCycles}** full cycle(s).`,
+                                        `⏭️ Remote ❌ Ignored: ${actualCourse}: ${sectionName}`,
+                                        `Closed the prompt for **${actualCourse}: ${sectionName}**. Added to Ignored list until your schedule changes or you click **🗑️ Clear**!`,
                                         15548997,
                                         false
                                     );
@@ -1594,12 +2134,13 @@
                                     continue;
                                 } else if (decision === 'answered-on-screen') {
                                     await waitForLoading(4000);
+                                    checkScheduleLoadChanges();
                                     if (isSidecarOpen) populateSidecarCourses();
                                     remainingRefreshSec = refreshIntervalSec;
                                     setBtnColor('#c8102e');
                                     break;
                                 } else {
-                                    btn.textContent = `⚠️ Found ${sectionName} (${subject})!`;
+                                    btn.textContent = `⚠️ Found ${actualCourse}: ${sectionName}!`;
                                     setBtnColor('#17a2b8');
                                     setRunningState(false);
                                     updateRefreshToggleUI();
@@ -1608,30 +2149,34 @@
                             } else if (result === 'success-auto') {
                                 beep.play().catch(() => {});
                                 enrolledThisCourse = true;
-                                sendDiscordAlarm(`✅ Auto-Enrolled: ${subject} — Section ${sectionName}!`, `Locked in section **${sectionName}** for **${subject}** automatically!`, 5763719, true);
+                                checkScheduleLoadChanges();
+                                sendDiscordAlarm(
+                                    `✅ Auto-Enrolled: ${actualCourse}: ${sectionName}!`,
+                                    `Locked in section **${actualCourse}: ${sectionName}** (${courseLabel}) automatically!`,
+                                    5763719,
+                                    true
+                                );
                                 if (isSidecarOpen) populateSidecarCourses();
                                 if (!onlyMissingSections) {
-                                    btn.textContent = `✅ Assigned ${sectionName} (${subject})!`;
+                                    btn.textContent = `✅ Assigned ${actualCourse}: ${sectionName}!`;
                                     setBtnColor('#17a2b8');
                                     setRunningState(false);
                                     updateRefreshToggleUI();
                                     return;
                                 }
-                                btn.textContent = `✅ Got ${subject} (${sectionName})! Next...`;
+                                btn.textContent = `✅ Got ${actualCourse}: ${sectionName}! Next...`;
                                 remainingRefreshSec = refreshIntervalSec;
                                 await sleep(Math.min(800, scanDelayMs));
                                 break;
                             }
                         }
-                        if (!isRunning) break;
+                        if (!isRunning || isRecoveryPromptActive || isRedirectExhausted) break;
                         if (!enrolledThisCourse) await sleep(scanDelayMs);
                     }
-
-                    if (isRunning && !autoConfirmYes) bumpCycle();
                 }
             } catch (err) {
                 console.error('[Hunter] Loop error:', err);
-                if (autoRefreshEnabled && isRunning) { triggerSafeReload('Loop exception recovery'); return; }
+                if (autoRefreshEnabled && isRunning) { await triggerSafeReload('Loop exception recovery'); return; }
                 btn.textContent = '💥 Error - see console (F12)';
                 setBtnColor('#6f42c1');
                 setRunningState(false);
@@ -1652,14 +2197,19 @@
                     alert("Please answer the 'Continue? Yes/No' prompt on the screen first!");
                     return;
                 }
+                setRedirectExhausted(false);
                 remainingRefreshSec = refreshIntervalSec;
                 setRunningState(true);
                 setBtnColor('#c8102e');
                 updateRefreshToggleUI();
+                if (/MultipleBrowser\.aspx/i.test(window.location.pathname) || isMultipleBrowserHtml(document)) {
+                    handleSessionLossOrRedirect('Manual Resume on Multiple Sessions Page');
+                    return;
+                }
                 if (!isLoopActive) startHunting();
             }
         });
 
-        if (isRunning && !isLoopActive) startHunting();
+        if (isRunning && !isLoopActive && !isRedirectExhausted) startHunting();
     });
 })();
