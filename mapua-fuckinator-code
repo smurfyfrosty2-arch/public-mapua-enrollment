@@ -1,12 +1,28 @@
 // ============================================================================
-// THE MAPUA FUCKINATOR 3000 - MASTER GITHUB CODE (v14.3 PRODUCTION)
+// THE MAPUA FUCKINATOR 3000 - MASTER GITHUB CODE (v14.5.4 PRODUCTION)
+// Features:
+//  • Hardware Device ID Whitelist Verification
+//  • 2-Way Discord ✅/❌ Reaction Submittance via Keyed Cloudflare Worker Relay
+//  • 100% Compatible with Tampermonkey v14.2 Loader (No @connect changes needed)
+//  • Declined Section Memory (Cycle Mode vs. Ignore Forever, Active Only When Auto-Accept is OFF)
+//  • One-Time Remote Gist Changelog Notifier
+//  • Sidecar Course Exclusion Drawer + Minimize Toggle
 // ============================================================================
 
 (function() {
     'use strict';
 
-    // OWNER RAW GITHUB GIST WHITELIST URL:
+    // 👉 1. OWNER RAW GITHUB GIST WHITELIST URL:
     const WHITELIST_URL = 'https://gist.githubusercontent.com/smurfyfrosty2-arch/bf67aac39e913984ef21ce565f7de61e/raw/whitelist.txt';
+
+    // 👉 2. RAW CHANGELOG GIST URL:
+    const CHANGELOG_URL = 'https://gist.githubusercontent.com/smurfyfrosty2-arch/704f4178c6cba8c382953fbf8dcd1510/raw/changelog.txt';
+
+    // 👉 3. CLOUDFLARE WORKER RELAY URL + SHARED KEY:
+    const CLOUDFLARE_RELAY_URL = 'https://mapua-discord-relay.gabtheus1299.workers.dev';
+    const RELAY_KEY = 'iamusingcalcheeseastherelaykeyforthishunkofjunk111406';
+
+    const DISCORD_DECISION_TIMEOUT_SEC = 60;
 
     function getMyDeviceID() {
         try {
@@ -96,7 +112,7 @@
                     .filter(line => line.length > 0);
 
                 if (approvedIds.includes(myDeviceId)) {
-                    console.log(`[Fuckinator 3000 v14.3] Device Authorized (${myDeviceId})!`);
+                    console.log(`[Fuckinator 3000 v14.5.4] Device Authorized (${myDeviceId})!`);
                     callback();
                 } else {
                     sessionStorage.removeItem('mapua_hunter_is_running');
@@ -119,6 +135,7 @@
         const oldSidecar = document.getElementById('mapua-hunter-sidecar-panel');
         if (oldSidecar) oldSidecar.remove();
 
+        // ---- STATE & LOCALSTORAGE ----
         let isRunning = sessionStorage.getItem('mapua_hunter_is_running') === 'true';
         let isLoopActive = false;
 
@@ -151,9 +168,62 @@
             excludedCourses = [];
         }
 
+        // ---- DECLINED SECTIONS TRACKER (ONLY ACTIVE WHEN AUTO-ACCEPT IS OFF) ----
+        let declineMode = localStorage.getItem('mapua_hunter_decline_mode') || 'cycle';
+        if (declineMode !== 'cycle' && declineMode !== 'forever') declineMode = 'cycle';
+
+        let recheckCycles = parseInt(localStorage.getItem('mapua_hunter_recheck_cycles'), 10);
+        if (isNaN(recheckCycles) || recheckCycles < 1) recheckCycles = 3;
+
+        let cycleCount = parseInt(localStorage.getItem('mapua_hunter_cycle_count'), 10) || 0;
+        let declinedSections = {};
+        try {
+            declinedSections = JSON.parse(localStorage.getItem('mapua_hunter_declined') || '{}') || {};
+        } catch (e) { declinedSections = {}; }
+
+        function declineKey(subject, sectionName) {
+            return normalizeCode(subject) + '|' + normalizeCode(sectionName);
+        }
+        function saveDeclined() {
+            localStorage.setItem('mapua_hunter_declined', JSON.stringify(declinedSections));
+            if (typeof updateDeclinedBtnUI === 'function') updateDeclinedBtnUI();
+        }
+        function markDeclined(subject, sectionName) {
+            if (autoConfirmYes) return;
+            declinedSections[declineKey(subject, sectionName)] = {
+                subject,
+                section: sectionName,
+                cycle: cycleCount
+            };
+            saveDeclined();
+        }
+        function isSectionDeclined(subject, sectionName) {
+            if (autoConfirmYes) return false;
+
+            const key = declineKey(subject, sectionName);
+            const entry = declinedSections[key];
+            if (!entry) return false;
+
+            if (declineMode === 'forever') return true;
+
+            const cyclesElapsed = cycleCount - (typeof entry.cycle === 'number' ? entry.cycle : 0);
+            if (cyclesElapsed >= recheckCycles) {
+                delete declinedSections[key];
+                saveDeclined();
+                return false;
+            }
+            return true;
+        }
+        function bumpCycle() {
+            if (autoConfirmYes) return;
+            cycleCount++;
+            localStorage.setItem('mapua_hunter_cycle_count', String(cycleCount));
+        }
+
         let remainingRefreshSec = refreshIntervalSec;
         let loadingStuckSince = null;
         const MAX_SPINNER_STUCK_MS = 15000;
+        const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
         function saveExcludedCourses() {
             localStorage.setItem('mapua_hunter_excluded_courses', JSON.stringify(excludedCourses));
@@ -186,33 +256,237 @@
             });
         }
 
-        function sendDiscordAlarm(title, description, colorDec = 65280) {
-            const url = (discordWebhookUrl || '').trim();
-            if (!url || !url.startsWith('https://discord')) return;
+        // =====================================================================
+        // DISCORD WEBHOOK SENDER
+        // =====================================================================
 
-            const cleanId = (hunterUserId || '').replace(/[^0-9]/g, '');
-            const mentionContent = cleanId.length >= 17 ? `<@${cleanId}>` : (hunterUserId ? `**${hunterUserId}**` : '@everyone');
+        function sendDiscordAlarm(title, description, colorDec = 65280, pingUser = true) {
+            return new Promise((resolve) => {
+                const rawUrl = (discordWebhookUrl || '').trim();
+                if (!rawUrl || !rawUrl.startsWith('https://discord')) {
+                    resolve(null);
+                    return;
+                }
 
-            const payload = JSON.stringify({
-                username: `FUCKINATOR 3000`,
-                content: `🚨 ${mentionContent} **MAPÚA SECTION ALARM!** 🚨`,
-                embeds: [{
-                    title: title,
-                    description: description,
-                    color: colorDec,
-                    timestamp: new Date().toISOString(),
-                    footer: { text: `THE MAPUA FUCKINATOR 3000 • v14.3 • ${getMyDeviceID()}` }
-                }]
-            });
+                const cleanWebhookUrl = rawUrl.replace(/\/+$/, '');
+                const waitUrl = cleanWebhookUrl.includes('?') ? `${cleanWebhookUrl}&wait=true` : `${cleanWebhookUrl}?wait=true`;
 
-            if (typeof GM_xmlhttpRequest === 'function') {
+                const cleanId = (hunterUserId || '').replace(/[^0-9]/g, '');
+                const mentionContent = pingUser
+                    ? (cleanId.length >= 17 ? `🚨 <@${cleanId}> **MAPÚA SECTION ALARM!** 🚨` : `🚨 **MAPÚA SECTION ALARM!** 🚨`)
+                    : `📢 **FUCKINATOR 3000 CHANGELOG UPDATE**`;
+
+                const payload = JSON.stringify({
+                    username: `FUCKINATOR 3000`,
+                    content: mentionContent,
+                    embeds: [{
+                        title: title,
+                        description: description,
+                        color: colorDec,
+                        timestamp: new Date().toISOString(),
+                        footer: { text: `THE MAPUA FUCKINATOR 3000 • v14.5.4 • ${getMyDeviceID()}` }
+                    }]
+                });
+
                 GM_xmlhttpRequest({
                     method: 'POST',
-                    url: url,
+                    url: waitUrl,
                     headers: { 'Content-Type': 'application/json' },
-                    data: payload
+                    data: payload,
+                    onload: (res) => {
+                        if (res.status >= 200 && res.status < 300) {
+                            try {
+                                const data = JSON.parse(res.responseText);
+                                resolve(data);
+                            } catch (e) {
+                                resolve(null);
+                            }
+                        } else {
+                            console.warn('[Discord Webhook] Non-200 status:', res.status, res.responseText);
+                            resolve(null);
+                        }
+                    },
+                    onerror: () => resolve(null)
                 });
+            });
+        }
+
+        // =====================================================================
+        // ONE-TIME CHANGELOG CHECKER
+        // =====================================================================
+
+        function hashString(str) {
+            let h = 2166136261;
+            for (let i = 0; i < str.length; i++) {
+                h ^= str.charCodeAt(i);
+                h = Math.imul(h, 16777619);
             }
+            return 'CL-GIST-' + (h >>> 0).toString(16).toUpperCase();
+        }
+
+        function parseAnyChangelog(rawText) {
+            const trimmed = (rawText || '').trim();
+            if (!trimmed) return null;
+
+            if (trimmed.startsWith('{')) {
+                try {
+                    const obj = JSON.parse(trimmed);
+                    return {
+                        versionId: obj.version ? `CL-GIST-${obj.version}` : hashString(trimmed),
+                        title: obj.title || `📢 Update ${obj.version || ''}`,
+                        body: Array.isArray(obj.changes) ? obj.changes.join('\n') : (obj.changes || trimmed)
+                    };
+                } catch (e) {}
+            }
+
+            const lines = trimmed.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+            const versionHash = hashString(trimmed);
+            if (lines.length === 1) {
+                return { versionId: versionHash, title: '📢 New Update Installed!', body: lines[0] };
+            }
+            return { versionId: versionHash, title: `📢 ${lines[0]}`, body: lines.slice(1).join('\n') };
+        }
+
+        function checkAndSendChangelog(forceSend = false) {
+            const url = (discordWebhookUrl || '').trim();
+            if (!url || !url.startsWith('https://discord')) return;
+            if (!CHANGELOG_URL || !CHANGELOG_URL.startsWith('http')) return;
+
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `${CHANGELOG_URL}?nocache=${Date.now()}`,
+                onload: async (res) => {
+                    if (res.status === 200 && res.responseText) {
+                        const parsed = parseAnyChangelog(res.responseText);
+                        if (!parsed) return;
+
+                        const lastSeenVer = localStorage.getItem('mapua_hunter_gist_changelog_ver');
+                        if (!forceSend && lastSeenVer === parsed.versionId) return;
+
+                        localStorage.setItem('mapua_hunter_gist_changelog_ver', parsed.versionId);
+                        await sendDiscordAlarm(parsed.title, parsed.body, 10181046, false);
+                    }
+                }
+            });
+        }
+
+        setTimeout(() => checkAndSendChangelog(false), 2000);
+
+        // =====================================================================
+        // SECURE CLOUDFLARE WORKER RELAY COMMUNICATOR (FETCH + KEY, v14.2 SAFE)
+        // =====================================================================
+
+        async function callDiscordRelay(payload) {
+            try {
+                const res = await fetch(CLOUDFLARE_RELAY_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Relay-Key': RELAY_KEY
+                    },
+                    body: JSON.stringify(payload)
+                });
+                const raw = await res.text();
+                let data = null;
+                try { data = raw ? JSON.parse(raw) : null; } catch (e) {}
+                const ok = res.status >= 200 && res.status < 300;
+                if (!ok) console.warn(`[Relay ${payload.action}] HTTP ${res.status}:`, raw);
+                return { status: res.status, ok, data, raw };
+            } catch (e) {
+                return { status: 0, ok: false, data: null, raw: String(e) };
+            }
+        }
+
+        async function addBotReaction(channelId, messageId, emojiChar, attempt = 0) {
+            const res = await callDiscordRelay({ action: 'react', channelId, messageId, emoji: emojiChar });
+            if (res.status === 204 || res.status === 200) return { ok: true, status: res.status };
+            if (res.status === 429 && attempt < 3) {
+                const wait = Math.ceil(((res.data && res.data.retry_after) || 1) * 1000);
+                await sleep(wait + 100);
+                return addBotReaction(channelId, messageId, emojiChar, attempt + 1);
+            }
+            return { ok: false, status: res.status, error: res.raw };
+        }
+
+        async function seedYesNoReactionsOnMessage(channelId, messageId) {
+            const r1 = await addBotReaction(channelId, messageId, '✅');
+            await sleep(350);
+            const r2 = await addBotReaction(channelId, messageId, '❌');
+            return { checkOk: r1.ok, crossOk: r2.ok, status: r1.status || r2.status, error: r1.error || r2.error };
+        }
+
+        async function getReactionUsers(channelId, messageId, emojiChar) {
+            const res = await callDiscordRelay({ action: 'get_reactions', channelId, messageId, emoji: emojiChar });
+            return (res.ok && Array.isArray(res.data)) ? res.data : [];
+        }
+
+        async function fetchDiscordMessagesAfter(channelId, afterMessageId) {
+            const res = await callDiscordRelay({ action: 'get_messages', channelId, afterId: afterMessageId });
+            return (res.ok && Array.isArray(res.data)) ? res.data : [];
+        }
+
+        async function waitForDiscordOrManualDecision(subject, sectionName, webhookMsgData) {
+            const cleanTargetUserId = (hunterUserId || '').replace(/[^0-9]/g, '');
+            const workerConfigured = Boolean(CLOUDFLARE_RELAY_URL && CLOUDFLARE_RELAY_URL.startsWith('https://'));
+            const hasMsg = webhookMsgData && webhookMsgData.channel_id && webhookMsgData.id;
+
+            if (!workerConfigured || !hasMsg) {
+                return 'manual-only';
+            }
+
+            const channelId = webhookMsgData.channel_id;
+            const alarmMessageId = webhookMsgData.id;
+            let lastCheckedMsgId = alarmMessageId;
+
+            const seedResult = await seedYesNoReactionsOnMessage(channelId, alarmMessageId);
+            if (!seedResult.checkOk) {
+                console.error(`[Discord Remote] Failed to add ✅ via relay. HTTP ${seedResult.status}: ${seedResult.error}`);
+            }
+
+            if (cleanTargetUserId.length < 17) {
+                console.warn('[Discord Remote] Discord User ID not set (17+ digits); cannot listen for reactions.');
+                return 'manual-only';
+            }
+
+            const deadline = Date.now() + (DISCORD_DECISION_TIMEOUT_SEC * 1000);
+            let loopCount = 0;
+
+            while (Date.now() < deadline) {
+                const curModal = document.querySelector('.swal-overlay--show-modal .swal-icon--info');
+                if (!curModal) {
+                    return 'answered-on-screen';
+                }
+
+                const remainingSec = Math.max(1, Math.ceil((deadline - Date.now()) / 1000));
+                btn.textContent = `📱 React ✅/❌ on Discord (${remainingSec}s)`;
+
+                const [yesReactors, noReactors] = await Promise.all([
+                    getReactionUsers(channelId, alarmMessageId, '✅'),
+                    getReactionUsers(channelId, alarmMessageId, '❌')
+                ]);
+
+                if (yesReactors.some(u => u && !u.bot && String(u.id) === cleanTargetUserId)) return 'discord-yes';
+                if (noReactors.some(u => u && !u.bot && String(u.id) === cleanTargetUserId)) return 'discord-no';
+
+                if (loopCount++ % 3 === 0) {
+                    const messages = await fetchDiscordMessagesAfter(channelId, lastCheckedMsgId);
+                    if (Array.isArray(messages) && messages.length > 0) {
+                        messages.sort((a, b) => (BigInt(a.id) > BigInt(b.id) ? 1 : -1));
+                        for (const msg of messages) {
+                            lastCheckedMsgId = msg.id;
+                            const authorId = msg.author ? String(msg.author.id) : '';
+                            const content = (msg.content || '').trim().toUpperCase();
+                            if (authorId !== cleanTargetUserId) continue;
+                            if (content === 'YES' || content === 'Y' || content === '✅') return 'discord-yes';
+                            if (content === 'NO' || content === 'N' || content === '❌') return 'discord-no';
+                        }
+                    }
+                }
+
+                await sleep(700);
+            }
+
+            return 'discord-timeout';
         }
 
         // =====================================================================
@@ -221,7 +495,7 @@
 
         const sidecar = document.createElement('div');
         sidecar.id = 'mapua-hunter-sidecar-panel';
-        sidecar.setAttribute('data-version', '14.3');
+        sidecar.setAttribute('data-version', '14.5.4');
         sidecar.style.cssText = `
             position: fixed !important; bottom: 20px !important; right: 315px !important;
             z-index: 2147483647 !important; background-color: #1e1e24 !important;
@@ -404,7 +678,7 @@
 
         const panel = document.createElement('div');
         panel.id = 'mapua-section-hunter-panel';
-        panel.setAttribute('data-version', '14.3');
+        panel.setAttribute('data-version', '14.5.4');
         panel.style.cssText = `
             position: fixed !important; bottom: 20px !important; right: 20px !important;
             z-index: 2147483647 !important; background-color: #1e1e24 !important;
@@ -587,15 +861,112 @@
         const confirmToggleBtn = document.createElement('button');
         confirmToggleBtn.type = 'button';
         confirmToggleBtn.style.cssText = `padding: 7px 10px !important; color: white !important; border: 1px solid #666 !important; border-radius: 6px !important; cursor: pointer !important; font-weight: 600 !important; font-size: 12px !important; width: 100% !important;`;
+
+        // =====================================================================
+        // DECLINED SECTION SETTINGS SUB-PANEL (ONLY ACTIVE WHEN AUTO-ACCEPT OFF)
+        // =====================================================================
+
+        const declinedConfigBox = document.createElement('div');
+        declinedConfigBox.style.cssText = `
+            display: ${autoConfirmYes ? 'none' : 'flex'} !important;
+            flex-direction: column !important; gap: 6px !important;
+            padding: 8px !important; border-radius: 6px !important;
+            background-color: #252530 !important; border: 1px dashed #ff9f43 !important;
+        `;
+
+        const declineModeBtn = document.createElement('button');
+        declineModeBtn.type = 'button';
+        declineModeBtn.style.cssText = `padding: 6px 8px !important; color: white !important; border: 1px solid #ff9f43 !important; border-radius: 5px !important; cursor: pointer !important; font-weight: bold !important; font-size: 11px !important; width: 100% !important;`;
+
+        const recheckRow = document.createElement('div');
+        recheckRow.style.cssText = `display: flex !important; align-items: center !important; justify-content: space-between !important; gap: 6px !important;`;
+        const recheckLabel = document.createElement('label');
+        recheckLabel.textContent = '🔁 Re-ask after (cycles):';
+        recheckLabel.style.cssText = `font-size: 11px !important; color: #ff9f43 !important; font-weight: bold !important;`;
+        const recheckInput = document.createElement('input');
+        recheckInput.type = 'text';
+        recheckInput.value = String(recheckCycles);
+        recheckInput.style.cssText = `width: 75px !important; padding: 3px 6px !important; border-radius: 4px !important; border: 1px solid #ff9f43 !important; background-color: #1e1e24 !important; color: #fff !important; font-size: 12px !important; font-weight: bold !important; text-align: right !important;`;
+
+        function updateDeclineModeUI() {
+            if (declineMode === 'forever') {
+                declineModeBtn.textContent = '🚫 When ❌ Declined: Ignore Until Cleared';
+                declineModeBtn.style.setProperty('background-color', '#c92a2a', 'important');
+                recheckRow.style.setProperty('display', 'none', 'important');
+            } else {
+                declineModeBtn.textContent = `🔁 When ❌ Declined: Cycle (${recheckCycles}x)`;
+                declineModeBtn.style.setProperty('background-color', '#d9480f', 'important');
+                recheckRow.style.setProperty('display', 'flex', 'important');
+            }
+        }
+
+        function commitRecheckValue() {
+            let val = parseInt(recheckInput.value.replace(/[^0-9]/g, ''), 10);
+            if (isNaN(val) || val < 1) val = 1;
+            recheckCycles = val;
+            recheckInput.value = String(val);
+            localStorage.setItem('mapua_hunter_recheck_cycles', String(val));
+            updateDeclineModeUI();
+        }
+        makeInputTypeable(recheckInput, commitRecheckValue);
+        recheckInput.addEventListener('input', () => {
+            const val = parseInt(recheckInput.value.replace(/[^0-9]/g, ''), 10);
+            if (!isNaN(val) && val >= 1) {
+                recheckCycles = val;
+                localStorage.setItem('mapua_hunter_recheck_cycles', String(val));
+                updateDeclineModeUI();
+            }
+        });
+        recheckInput.addEventListener('blur', commitRecheckValue);
+        recheckRow.appendChild(recheckLabel);
+        recheckRow.appendChild(recheckInput);
+
+        declineModeBtn.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            declineMode = (declineMode === 'cycle') ? 'forever' : 'cycle';
+            localStorage.setItem('mapua_hunter_decline_mode', declineMode);
+            updateDeclineModeUI();
+        });
+
+        const declinedBtn = document.createElement('button');
+        declinedBtn.type = 'button';
+        declinedBtn.style.cssText = `padding: 6px 8px !important; color: white !important; border: 1px solid #666 !important; border-radius: 5px !important; cursor: pointer !important; font-weight: 600 !important; font-size: 11px !important; width: 100% !important;`;
+        function updateDeclinedBtnUI() {
+            const keys = Object.keys(declinedSections);
+            const n = keys.length;
+            if (n > 0) {
+                const preview = keys.slice(0, 2).map(k => declinedSections[k]?.section || k).join(', ');
+                declinedBtn.textContent = `🗑️ Ignored Sections: ${n} (${preview}${n > 2 ? '...' : ''}) — Clear`;
+                declinedBtn.style.setProperty('background-color', '#c92a2a', 'important');
+            } else {
+                declinedBtn.textContent = '🗑️ Ignored Sections: None';
+                declinedBtn.style.setProperty('background-color', '#343a40', 'important');
+            }
+        }
+        updateDeclinedBtnUI();
+        updateDeclineModeUI();
+
+        declinedBtn.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            declinedSections = {};
+            saveDeclined();
+        });
+
+        declinedConfigBox.appendChild(declineModeBtn);
+        declinedConfigBox.appendChild(recheckRow);
+        declinedConfigBox.appendChild(declinedBtn);
+
         function updateConfirmToggleUI() {
             if (autoConfirmYes) {
                 confirmToggleBtn.textContent = '🤖 Auto-Accept (Press Yes): ON';
                 confirmToggleBtn.style.setProperty('background-color', '#d39e00', 'important');
                 confirmToggleBtn.style.setProperty('color', '#000000', 'important');
+                declinedConfigBox.style.setProperty('display', 'none', 'important');
             } else {
-                confirmToggleBtn.textContent = '🖐️ Auto-Accept (Press Yes): OFF';
+                confirmToggleBtn.textContent = '📱 Auto-Accept: OFF (Discord ✅/❌)';
                 confirmToggleBtn.style.setProperty('background-color', '#495057', 'important');
                 confirmToggleBtn.style.setProperty('color', '#ffffff', 'important');
+                declinedConfigBox.style.setProperty('display', 'flex', 'important');
             }
         }
         updateConfirmToggleUI();
@@ -745,16 +1116,35 @@
         testWebhookBtn.textContent = '🔔 Test';
         testWebhookBtn.style.cssText = `padding: 5px 8px !important; background-color: #5865F2 !important; color: white !important; border: none !important; border-radius: 4px !important; cursor: pointer !important; font-weight: bold !important; font-size: 11px !important;`;
 
-        testWebhookBtn.addEventListener('click', (e) => {
+        testWebhookBtn.addEventListener('click', async (e) => {
             e.preventDefault(); e.stopPropagation();
             commitNameValue(); commitWebhookValue();
             if (!discordWebhookUrl || !discordWebhookUrl.startsWith('https://discord')) {
                 alert('Paste a valid Discord Webhook URL first!');
                 return;
             }
-            sendDiscordAlarm(`🧪 Test Alarm!`, `Your Discord ID is linked and ready to receive direct pings!`, 5793266);
-            testWebhookBtn.textContent = '✅ Sent!';
-            setTimeout(() => { testWebhookBtn.textContent = '🔔 Test'; }, 2000);
+            testWebhookBtn.textContent = '⏳...';
+            const cleanId = (hunterUserId || '').replace(/[^0-9]/g, '');
+
+            const msgData = await sendDiscordAlarm(
+                `🧪 v14.5.4 Reaction Test Alarm!`,
+                `Your Discord ID (${cleanId ? `<@${cleanId}>` : '`⚠️ NOT SET - Enter your 18-digit Discord ID in GUI!`'}) is linked!\n\n` +
+                `👉 **Watch below:** The Bot will now add **✅** and **❌** reactions to this message!`,
+                5793266,
+                true
+            );
+
+            if (msgData && msgData.channel_id && msgData.id) {
+                const seed = await seedYesNoReactionsOnMessage(msgData.channel_id, msgData.id);
+                if (!seed.checkOk) {
+                    alert(`Relay reaction test failed (HTTP ${seed.status}).\n\n401 = wrong RELAY_KEY\n403 = bot can't see the channel / channel not allowed\n0 = Worker URL unreachable\n\nDetails: ${(seed.error || '').slice(0, 200)}`);
+                }
+            }
+
+            checkAndSendChangelog(false);
+
+            testWebhookBtn.textContent = msgData ? '✅ Sent!' : '⚠️ Err';
+            setTimeout(() => { testWebhookBtn.textContent = '🔔 Test'; }, 2500);
         });
 
         webhookRow.appendChild(webhookInput);
@@ -768,6 +1158,7 @@
         settingsContainer.appendChild(timePrefBtn);
         settingsContainer.appendChild(strictMatchBtn);
         settingsContainer.appendChild(confirmToggleBtn);
+        settingsContainer.appendChild(declinedConfigBox);
         settingsContainer.appendChild(refreshToggleBtn);
         settingsContainer.appendChild(speedRow);
         settingsContainer.appendChild(refreshRow);
@@ -799,19 +1190,22 @@
         setInterval(ensurePanelMounted, 500);
 
         // =====================================================================
-        // CORE HUNTING LOGIC
+        // CORE HUNTING LOGIC (WITH ✅ / ❌ REACTION REMOTE CONTROL)
         // =====================================================================
 
         const beep = new Audio('https://www.soundjay.com/buttons/sounds/button-09.mp3');
-        const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+        function isUserTypingInPanel() {
+            const a = document.activeElement;
+            return a === speedInput ||
+                   a === refreshInput ||
+                   a === nameInput ||
+                   a === webhookInput ||
+                   a === recheckInput;
+        }
 
         async function waitWhileUserTyping() {
-            while (
-                document.activeElement === speedInput ||
-                document.activeElement === refreshInput ||
-                document.activeElement === nameInput ||
-                document.activeElement === webhookInput
-            ) {
+            while (isUserTypingInPanel()) {
                 await sleep(100);
             }
         }
@@ -826,12 +1220,7 @@
 
         setInterval(() => {
             const infoModalOpen = !!document.querySelector('.swal-overlay--show-modal .swal-icon--info');
-            const userTyping = (
-                document.activeElement === speedInput ||
-                document.activeElement === refreshInput ||
-                document.activeElement === nameInput ||
-                document.activeElement === webhookInput
-            );
+            const userTyping = isUserTypingInPanel();
             if (!isRunning || infoModalOpen || userTyping) {
                 loadingStuckSince = null;
                 updateRefreshToggleUI();
@@ -898,6 +1287,14 @@
             const modal = getModal();
             if (!modal) return 'already-closed';
             const strategies = [
+                ['Cancel button humanClick', () => {
+                    const c = modal.querySelector('button.swal-button--cancel');
+                    if (c) humanClick(c);
+                }],
+                ['Cancel button .click()', () => {
+                    const c = modal.querySelector('button.swal-button--cancel');
+                    if (c) c.click();
+                }],
                 ['click outside', () => clickOutside(modal)],
                 ['overlay.click()', () => modal.click()],
                 ['OK humanClick', () => {
@@ -937,7 +1334,7 @@
             return null;
         }
 
-        async function handleModal(sectionName) {
+        async function handleModal(subject, sectionName) {
             const pollInterval = Math.min(150, Math.max(30, scanDelayMs));
             const maxPolls = Math.ceil(4500 / pollInterval);
             for (let i = 0; i < maxPolls; i++) {
@@ -1105,6 +1502,9 @@
                             let sBtn = sectionButtons[j];
                             let sectionName = sBtn.getAttribute('data-section');
                             let btnSubject = sBtn.getAttribute('data-subject');
+
+                            if (!autoConfirmYes && isSectionDeclined(subject, sectionName)) continue;
+
                             if (!sBtn.isConnected) {
                                 sBtn = getSectionButtonsForCourse(subject).find(b =>
                                     b.getAttribute('data-section') === sectionName &&
@@ -1114,12 +1514,14 @@
                             }
                             let parentRow = sBtn.closest('tr');
                             if (parentRow && parentRow.classList.contains('load') && parentRow.classList.contains('hidden')) continue;
+                            const scheduleDetails = parentRow ? (parentRow.textContent || '').replace(/\s+/g, ' ').trim() : '';
+
                             if (parentRow) parentRow.click();
                             await sleep(Math.min(250, Math.max(20, scanDelayMs)));
                             sBtn.click();
                             await waitForLoading();
 
-                            let result = await handleModal(`${subject}-${sectionName}`);
+                            let result = await handleModal(subject, sectionName);
                             if (result === 'conflict' || result === 'timeout') continue;
                             else if (result === 'stuck') {
                                 if (autoRefreshEnabled) { triggerSafeReload('Modal stuck failsafe'); return; }
@@ -1128,17 +1530,85 @@
                                 setRunningState(false);
                                 return;
                             } else if (result === 'success-manual') {
-                                btn.textContent = `⚠️ Found ${sectionName} (${subject})!`;
-                                setBtnColor('#17a2b8');
                                 beep.play().catch(() => {});
-                                sendDiscordAlarm(`⚠️ Section Found: ${subject} — ${sectionName}`, `A conflict-free section (**${sectionName}**) for **${subject}** is waiting for your click!`, 16776960);
-                                setRunningState(false);
-                                updateRefreshToggleUI();
-                                return;
+                                setBtnColor('#17a2b8');
+                                const cleanId = (hunterUserId || '').replace(/[^0-9]/g, '');
+
+                                const webhookMsgData = await sendDiscordAlarm(
+                                    `⚠️ Section Found: ${subject} — ${sectionName}`,
+                                    `A conflict-free section (**${sectionName}**) for **${subject}** is waiting on your screen!\n` +
+                                    (scheduleDetails ? `📅 **Details:** \`${scheduleDetails.slice(0, 140)}\`\n\n` : `\n`) +
+                                    `👉 **Tap ✅ to ACCEPT or ❌ to SKIP below within ${DISCORD_DECISION_TIMEOUT_SEC}s!**\n` +
+                                    `🔒 *Reaction Locked to:* ${cleanId ? `<@${cleanId}>` : '`⚠️ Set Discord User ID in GUI!`'}`,
+                                    16776960,
+                                    true
+                                );
+
+                                const decision = await waitForDiscordOrManualDecision(subject, sectionName, webhookMsgData);
+
+                                if (decision === 'discord-yes') {
+                                    const confirmedHow = await confirmYesModal();
+                                    if (confirmedHow) {
+                                        await waitForLoading(8000);
+                                        await sleep(Math.min(400, scanDelayMs));
+                                        const followUp = getModal();
+                                        if (followUp && !followUp.querySelector('.swal-icon--info')) {
+                                            await dismissModal();
+                                            await waitForLoading(4000);
+                                        }
+                                        enrolledThisCourse = true;
+                                        await sendDiscordAlarm(
+                                            `✅ Remote ✅ Accepted: ${subject} — ${sectionName}!`,
+                                            `Successfully enrolled in **${sectionName}** for **${subject}** via your Discord reaction!`,
+                                            5763719,
+                                            true
+                                        );
+                                        if (isSidecarOpen) populateSidecarCourses();
+                                        if (!onlyMissingSections) {
+                                            btn.textContent = `✅ Assigned ${sectionName} (${subject})!`;
+                                            setBtnColor('#17a2b8');
+                                            setRunningState(false);
+                                            updateRefreshToggleUI();
+                                            return;
+                                        }
+                                        btn.textContent = `✅ Got ${subject} (${sectionName})! Next...`;
+                                        setBtnColor('#c8102e');
+                                        remainingRefreshSec = refreshIntervalSec;
+                                        await sleep(Math.min(800, scanDelayMs));
+                                        break;
+                                    }
+                                } else if (decision === 'discord-no') {
+                                    markDeclined(subject, sectionName);
+                                    await dismissModal();
+                                    await waitForLoading(3000);
+                                    await sendDiscordAlarm(
+                                        `⏭️ Remote ❌ Skipped: ${subject} — ${sectionName}`,
+                                        declineMode === 'forever'
+                                            ? `Closed the prompt for **${sectionName}** (**${subject}**). Ignored completely until you click **🗑️ Ignored Sections — Clear** in the panel.`
+                                            : `Closed the prompt for **${sectionName}** (**${subject}**). Will re-ask after **${recheckCycles}** full cycle(s).`,
+                                        15548997,
+                                        false
+                                    );
+                                    setBtnColor('#c8102e');
+                                    remainingRefreshSec = refreshIntervalSec;
+                                    continue;
+                                } else if (decision === 'answered-on-screen') {
+                                    await waitForLoading(4000);
+                                    if (isSidecarOpen) populateSidecarCourses();
+                                    remainingRefreshSec = refreshIntervalSec;
+                                    setBtnColor('#c8102e');
+                                    break;
+                                } else {
+                                    btn.textContent = `⚠️ Found ${sectionName} (${subject})!`;
+                                    setBtnColor('#17a2b8');
+                                    setRunningState(false);
+                                    updateRefreshToggleUI();
+                                    return;
+                                }
                             } else if (result === 'success-auto') {
                                 beep.play().catch(() => {});
                                 enrolledThisCourse = true;
-                                sendDiscordAlarm(`✅ Auto-Enrolled: ${subject} — Section ${sectionName}!`, `Locked in section **${sectionName}** for **${subject}** automatically!`, 5763719);
+                                sendDiscordAlarm(`✅ Auto-Enrolled: ${subject} — Section ${sectionName}!`, `Locked in section **${sectionName}** for **${subject}** automatically!`, 5763719, true);
                                 if (isSidecarOpen) populateSidecarCourses();
                                 if (!onlyMissingSections) {
                                     btn.textContent = `✅ Assigned ${sectionName} (${subject})!`;
@@ -1156,8 +1626,11 @@
                         if (!isRunning) break;
                         if (!enrolledThisCourse) await sleep(scanDelayMs);
                     }
+
+                    if (isRunning && !autoConfirmYes) bumpCycle();
                 }
             } catch (err) {
+                console.error('[Hunter] Loop error:', err);
                 if (autoRefreshEnabled && isRunning) { triggerSafeReload('Loop exception recovery'); return; }
                 btn.textContent = '💥 Error - see console (F12)';
                 setBtnColor('#6f42c1');
